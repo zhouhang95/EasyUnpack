@@ -139,7 +139,9 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         var roots = Set<String>()
         var status = unzGoToFirstFile(archive)
         while status == 0 {
-            var buffer = [CChar](repeating: 0, count: 65_536)
+            // minizip's compatibility API narrows this value to UInt16 internally.
+            // Passing 65_536 wraps to zero and returns an empty filename.
+            var buffer = [CChar](repeating: 0, count: 65_535)
             let infoStatus = buffer.withUnsafeMutableBufferPointer { pointer in
                 unzGetCurrentFileInfo64(
                     archive, nil, pointer.baseAddress, UInt(pointer.count),
@@ -155,6 +157,7 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
             }
             status = unzGoToNextFile(archive)
         }
+        guard status == -100 else { throw ArchiveError.damagedArchive }
         return roots
     }
 
