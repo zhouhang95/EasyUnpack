@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* ZipArchive in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000003 /* ZipArchive */; };
+		A20000000000000000000001 /* PLzmaSDK in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000003 /* PLzmaSDK */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000001 /* ZipArchive in Frameworks */,
+				A20000000000000000000001 /* PLzmaSDK in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,6 +73,7 @@
 			name = EasyUnpack;
 			packageProductDependencies = (
 				A10000000000000000000003 /* ZipArchive */,
+				A20000000000000000000003 /* PLzmaSDK */,
 			);
 			productName = EasyUnpack;
 			productReference = C8DE2DBB3029C5D50061201D /* EasyUnpack.app */;
@@ -102,6 +105,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A10000000000000000000002 /* XCRemoteSwiftPackageReference "ZipArchive" */,
+				A20000000000000000000002 /* XCRemoteSwiftPackageReference "PLzmaSDK" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = C8DE2DBC3029C5D50061201D /* Products */;
@@ -259,7 +263,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
@@ -290,7 +294,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
@@ -346,6 +350,14 @@
 				minimumVersion = 2.6.0;
 			};
 		};
+		A20000000000000000000002 /* XCRemoteSwiftPackageReference "PLzmaSDK" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/OlehKulykov/PLzmaSDK.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.6.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -353,6 +365,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A10000000000000000000002 /* XCRemoteSwiftPackageReference "ZipArchive" */;
 			productName = ZipArchive;
+		};
+		A20000000000000000000003 /* PLzmaSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A20000000000000000000002 /* XCRemoteSwiftPackageReference "PLzmaSDK" */;
+			productName = PLzmaSDK;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

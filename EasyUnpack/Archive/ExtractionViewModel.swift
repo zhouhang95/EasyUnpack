@@ -42,16 +42,18 @@ final class ExtractionViewModel {
     func acceptOpenedFiles(_ urls: [URL]) {
         var archiveURLs = urls.filter { url in
             let ext = url.pathExtension.lowercased()
-            return ext == "zip" || ext == "tar" || ext.range(of: #"z\d\d"#, options: .regularExpression) != nil
+            return ext == "zip" || ext == "tar" || ext == "7z" || ext == "001" || ext.range(of: #"z\d\d"#, options: .regularExpression) != nil
         }
         guard !archiveURLs.isEmpty else {
             isError = true
-            message = "Finder 传入的文件不是受支持的 ZIP 或 TAR 文件。"
+            message = "Finder 传入的文件不是受支持的 ZIP、TAR 或 7z 文件。"
             return
         }
 
         if let main = archiveURLs.first(where: { $0.pathExtension.lowercased() == "zip" }) {
             archiveURLs = Array(Set(archiveURLs + relatedVolumes(for: main)))
+        } else if let firstVolume = archiveURLs.first(where: { $0.pathExtension == "001" }) {
+            archiveURLs = Array(Set(archiveURLs + relatedSevenZipVolumes(for: firstVolume)))
         }
 
         let openedBase = archiveURLs[0].deletingPathExtension().path
@@ -69,7 +71,7 @@ final class ExtractionViewModel {
         // Split ZIP volumes are discovered from the archive's directory, so extraction can start immediately.
         if sourceURLs.contains(where: {
             let ext = $0.pathExtension.lowercased()
-            return ext == "zip" || ext == "tar"
+            return ext == "zip" || ext == "tar" || ext == "7z" || ext == "001"
         }) {
             extract()
         }
@@ -81,11 +83,18 @@ final class ExtractionViewModel {
         panel.prompt = "选择"
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.zip, UTType(filenameExtension: "tar") ?? .data, .data]
+        panel.allowedContentTypes = [
+            .zip,
+            UTType(filenameExtension: "tar") ?? .data,
+            UTType(filenameExtension: "7z") ?? .data,
+            .data
+        ]
         guard panel.runModal() == .OK else { return }
         sourceURLs = panel.urls
         if let main = sourceURLs.first(where: { $0.pathExtension.lowercased() == "zip" }) {
             sourceURLs = Array(Set(sourceURLs + relatedVolumes(for: main)))
+        } else if let firstVolume = sourceURLs.first(where: { $0.pathExtension == "001" }) {
+            sourceURLs = Array(Set(sourceURLs + relatedSevenZipVolumes(for: firstVolume)))
         }
         destinationURL = archiveDirectory
         message = nil
@@ -138,6 +147,21 @@ final class ExtractionViewModel {
             let ext = url.pathExtension.lowercased()
             return ext.range(of: #"z\d\d"#, options: .regularExpression) != nil
         }
+    }
+
+    private func relatedSevenZipVolumes(for firstVolume: URL) -> [URL] {
+        let directory = firstVolume.deletingLastPathComponent()
+        let base = firstVolume.deletingPathExtension().lastPathComponent.lowercased()
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return contents.filter { url in
+            guard url.deletingPathExtension().lastPathComponent.lowercased() == base else { return false }
+            let ext = url.pathExtension
+            return ext.count == 3 && ext.allSatisfy(\.isNumber)
+        }.sorted { $0.pathExtension < $1.pathExtension }
     }
 
     private func moveOriginalsToTrash(_ urls: [URL]) async throws {

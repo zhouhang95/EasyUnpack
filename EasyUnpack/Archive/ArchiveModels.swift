@@ -3,6 +3,7 @@ import Foundation
 enum ArchiveFormat: String, CaseIterable, Sendable {
     case zip
     case tar
+    case sevenZ = "7z"
 
     var displayName: String { rawValue.uppercased() }
 }
