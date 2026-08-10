@@ -4,6 +4,7 @@ enum ArchiveFormat: String, CaseIterable, Sendable {
     case zip
     case tar
     case sevenZ = "7z"
+    case rar
 
     var displayName: String { rawValue.uppercased() }
 }

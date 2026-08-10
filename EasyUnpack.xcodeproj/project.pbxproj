@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* ZipArchive in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000003 /* ZipArchive */; };
 		A20000000000000000000001 /* PLzmaSDK in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000003 /* PLzmaSDK */; };
+		A30000000000000000000001 /* CUnRAR in Frameworks */ = {isa = PBXBuildFile; productRef = A30000000000000000000003 /* CUnRAR */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 			files = (
 				A10000000000000000000001 /* ZipArchive in Frameworks */,
 				A20000000000000000000001 /* PLzmaSDK in Frameworks */,
+				A30000000000000000000001 /* CUnRAR in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -74,6 +76,7 @@
 			packageProductDependencies = (
 				A10000000000000000000003 /* ZipArchive */,
 				A20000000000000000000003 /* PLzmaSDK */,
+				A30000000000000000000003 /* CUnRAR */,
 			);
 			productName = EasyUnpack;
 			productReference = C8DE2DBB3029C5D50061201D /* EasyUnpack.app */;
@@ -106,6 +109,7 @@
 			packageReferences = (
 				A10000000000000000000002 /* XCRemoteSwiftPackageReference "ZipArchive" */,
 				A20000000000000000000002 /* XCRemoteSwiftPackageReference "PLzmaSDK" */,
+				A30000000000000000000002 /* XCLocalSwiftPackageReference "Vendor/UnRAR" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = C8DE2DBC3029C5D50061201D /* Products */;
@@ -341,6 +345,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		A30000000000000000000002 /* XCLocalSwiftPackageReference "Vendor/UnRAR" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/UnRAR;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		A10000000000000000000002 /* XCRemoteSwiftPackageReference "ZipArchive" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -370,6 +381,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A20000000000000000000002 /* XCRemoteSwiftPackageReference "PLzmaSDK" */;
 			productName = PLzmaSDK;
+		};
+		A30000000000000000000003 /* CUnRAR */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A30000000000000000000002 /* XCLocalSwiftPackageReference "Vendor/UnRAR" */;
+			productName = CUnRAR;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -3,7 +3,7 @@ import Foundation
 final class ArchiveService: Sendable {
     private let extractors: [any ArchiveExtractor]
 
-    init(extractors: [any ArchiveExtractor] = [ZIPArchiveExtractor(), TARArchiveExtractor(), SevenZipArchiveExtractor()]) {
+    init(extractors: [any ArchiveExtractor] = [ZIPArchiveExtractor(), TARArchiveExtractor(), SevenZipArchiveExtractor(), RARArchiveExtractor()]) {
         self.extractors = extractors
     }
 

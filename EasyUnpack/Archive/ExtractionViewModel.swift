@@ -42,11 +42,12 @@ final class ExtractionViewModel {
     func acceptOpenedFiles(_ urls: [URL]) {
         var archiveURLs = urls.filter { url in
             let ext = url.pathExtension.lowercased()
-            return ext == "zip" || ext == "tar" || ext == "7z" || ext == "001" || ext.range(of: #"z\d\d"#, options: .regularExpression) != nil
+            return ext == "zip" || ext == "tar" || ext == "7z" || ext == "rar" || ext == "001" ||
+                ext.range(of: #"[zr]\d\d"#, options: .regularExpression) != nil
         }
         guard !archiveURLs.isEmpty else {
             isError = true
-            message = "Finder 传入的文件不是受支持的 ZIP、TAR 或 7z 文件。"
+            message = "Finder 传入的文件不是受支持的 ZIP、TAR、7z 或 RAR 文件。"
             return
         }
 
@@ -54,6 +55,8 @@ final class ExtractionViewModel {
             archiveURLs = Array(Set(archiveURLs + relatedVolumes(for: main)))
         } else if let firstVolume = archiveURLs.first(where: { $0.pathExtension == "001" }) {
             archiveURLs = Array(Set(archiveURLs + relatedSevenZipVolumes(for: firstVolume)))
+        } else if let mainRAR = archiveURLs.first(where: { $0.pathExtension.lowercased() == "rar" }) {
+            archiveURLs = Array(Set(archiveURLs + relatedRARVolumes(for: mainRAR)))
         }
 
         let openedBase = archiveURLs[0].deletingPathExtension().path
@@ -71,7 +74,7 @@ final class ExtractionViewModel {
         // Split ZIP volumes are discovered from the archive's directory, so extraction can start immediately.
         if sourceURLs.contains(where: {
             let ext = $0.pathExtension.lowercased()
-            return ext == "zip" || ext == "tar" || ext == "7z" || ext == "001"
+            return ext == "zip" || ext == "tar" || ext == "7z" || ext == "rar" || ext == "001"
         }) {
             extract()
         }
@@ -87,6 +90,7 @@ final class ExtractionViewModel {
             .zip,
             UTType(filenameExtension: "tar") ?? .data,
             UTType(filenameExtension: "7z") ?? .data,
+            UTType(filenameExtension: "rar") ?? .data,
             .data
         ]
         guard panel.runModal() == .OK else { return }
@@ -95,6 +99,8 @@ final class ExtractionViewModel {
             sourceURLs = Array(Set(sourceURLs + relatedVolumes(for: main)))
         } else if let firstVolume = sourceURLs.first(where: { $0.pathExtension == "001" }) {
             sourceURLs = Array(Set(sourceURLs + relatedSevenZipVolumes(for: firstVolume)))
+        } else if let mainRAR = sourceURLs.first(where: { $0.pathExtension.lowercased() == "rar" }) {
+            sourceURLs = Array(Set(sourceURLs + relatedRARVolumes(for: mainRAR)))
         }
         destinationURL = archiveDirectory
         message = nil
@@ -162,6 +168,26 @@ final class ExtractionViewModel {
             let ext = url.pathExtension
             return ext.count == 3 && ext.allSatisfy(\.isNumber)
         }.sorted { $0.pathExtension < $1.pathExtension }
+    }
+
+    private func relatedRARVolumes(for main: URL) -> [URL] {
+        let directory = main.deletingLastPathComponent()
+        let lowerName = main.lastPathComponent.lowercased()
+        let partRange = lowerName.range(of: #"\.part\d+\.rar$"#, options: .regularExpression)
+        let base = partRange.map { String(lowerName[..<$0.lowerBound]) }
+            ?? main.deletingPathExtension().lastPathComponent.lowercased()
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        )) ?? []
+        return contents.filter { url in
+            let name = url.lastPathComponent.lowercased()
+            if partRange != nil {
+                return name.range(of: "^\(NSRegularExpression.escapedPattern(for: base))\\.part\\d+\\.rar$", options: .regularExpression) != nil
+            }
+            let ext = url.pathExtension.lowercased()
+            return url.deletingPathExtension().lastPathComponent.lowercased() == base &&
+                (ext == "rar" || ext.range(of: #"r\d\d"#, options: .regularExpression) != nil)
+        }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
 
     private func moveOriginalsToTrash(_ urls: [URL]) async throws {
