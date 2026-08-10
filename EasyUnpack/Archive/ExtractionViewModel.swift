@@ -40,6 +40,14 @@ final class ExtractionViewModel {
 
     /// Receives archives opened from Finder's “Open With” menu.
     func acceptOpenedFiles(_ urls: [URL]) {
+        acceptFiles(urls, autoExtract: true)
+    }
+
+    func acceptDroppedFiles(_ urls: [URL]) {
+        acceptFiles(urls, autoExtract: false)
+    }
+
+    private func acceptFiles(_ urls: [URL], autoExtract: Bool) {
         var archiveURLs = urls.filter { url in
             let ext = url.pathExtension.lowercased()
             return ext == "zip" || ext == "tar" || ext == "7z" || ext == "rar" || ext == "001" ||
@@ -47,7 +55,7 @@ final class ExtractionViewModel {
         }
         guard !archiveURLs.isEmpty else {
             isError = true
-            message = "Finder 传入的文件不是受支持的 ZIP、TAR、7z 或 RAR 文件。"
+            message = "拖入的文件不是受支持的 ZIP、TAR、7z 或 RAR 文件。"
             return
         }
 
@@ -69,10 +77,10 @@ final class ExtractionViewModel {
         }
         destinationURL = archiveDirectory
         isError = false
-        message = "已从 Finder 接收文件，将解压到压缩包所在目录。"
+        message = autoExtract ? "已从 Finder 接收文件，将解压到压缩包所在目录。" : nil
 
         // Split ZIP volumes are discovered from the archive's directory, so extraction can start immediately.
-        if sourceURLs.contains(where: {
+        if autoExtract, sourceURLs.contains(where: {
             let ext = $0.pathExtension.lowercased()
             return ext == "zip" || ext == "tar" || ext == "7z" || ext == "rar" || ext == "001"
         }) {
