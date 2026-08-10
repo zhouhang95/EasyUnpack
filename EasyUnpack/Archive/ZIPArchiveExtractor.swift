@@ -2,29 +2,87 @@ import Foundation
 import ZipArchive
 
 @_silgen_name("mz_zip_reader_create")
-private func mzZipReaderCreate(_ handle: UnsafeMutablePointer<UnsafeMutableRawPointer?>) -> UnsafeMutableRawPointer?
+nonisolated private func mzZipReaderCreate(_ handle: UnsafeMutablePointer<UnsafeMutableRawPointer?>) -> UnsafeMutableRawPointer?
 @_silgen_name("mz_zip_reader_delete")
-private func mzZipReaderDelete(_ handle: UnsafeMutablePointer<UnsafeMutableRawPointer?>)
+nonisolated private func mzZipReaderDelete(_ handle: UnsafeMutablePointer<UnsafeMutableRawPointer?>)
 @_silgen_name("mz_zip_reader_open_file")
-private func mzZipReaderOpenFile(_ handle: UnsafeMutableRawPointer?, _ path: UnsafePointer<CChar>) -> Int32
+nonisolated private func mzZipReaderOpenFile(_ handle: UnsafeMutableRawPointer?, _ path: UnsafePointer<CChar>) -> Int32
 @_silgen_name("mz_zip_reader_set_password")
-private func mzZipReaderSetPassword(_ handle: UnsafeMutableRawPointer?, _ password: UnsafePointer<CChar>)
+nonisolated private func mzZipReaderSetPassword(_ handle: UnsafeMutableRawPointer?, _ password: UnsafePointer<CChar>)
 @_silgen_name("mz_zip_reader_save_all")
-private func mzZipReaderSaveAll(_ handle: UnsafeMutableRawPointer?, _ destination: UnsafePointer<CChar>) -> Int32
+nonisolated private func mzZipReaderSaveAll(_ handle: UnsafeMutableRawPointer?, _ destination: UnsafePointer<CChar>) -> Int32
 @_silgen_name("mz_zip_reader_close")
-private func mzZipReaderClose(_ handle: UnsafeMutableRawPointer?) -> Int32
+nonisolated private func mzZipReaderClose(_ handle: UnsafeMutableRawPointer?) -> Int32
+private typealias MinizipProgressCallback = @convention(c) (
+    UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Int64
+) -> Int32
+@_silgen_name("mz_zip_reader_set_progress_cb")
+nonisolated private func mzZipReaderSetProgressCallback(
+    _ handle: UnsafeMutableRawPointer?, _ userdata: UnsafeMutableRawPointer?, _ callback: MinizipProgressCallback?
+)
+@_silgen_name("mz_zip_reader_set_progress_interval")
+nonisolated private func mzZipReaderSetProgressInterval(_ handle: UnsafeMutableRawPointer?, _ milliseconds: UInt32)
+@_silgen_name("unzOpen64")
+nonisolated private func unzOpen64(_ path: UnsafeRawPointer?) -> UnsafeMutableRawPointer?
+@_silgen_name("unzClose")
+nonisolated private func unzClose(_ handle: UnsafeMutableRawPointer?) -> Int32
+@_silgen_name("unzGoToFirstFile")
+nonisolated private func unzGoToFirstFile(_ handle: UnsafeMutableRawPointer?) -> Int32
+@_silgen_name("unzGoToNextFile")
+nonisolated private func unzGoToNextFile(_ handle: UnsafeMutableRawPointer?) -> Int32
+@_silgen_name("unzGetCurrentFileInfo64")
+nonisolated private func unzGetCurrentFileInfo64(
+    _ handle: UnsafeMutableRawPointer?, _ info: UnsafeMutableRawPointer?,
+    _ filename: UnsafeMutablePointer<CChar>?, _ filenameSize: UInt,
+    _ extra: UnsafeMutableRawPointer?, _ extraSize: UInt,
+    _ comment: UnsafeMutablePointer<CChar>?, _ commentSize: UInt
+) -> Int32
+
+nonisolated private final class MinizipProgressBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private let total: Int64
+    private let report: @Sendable (Double) -> Void
+    private var completed: Int64 = 0
+    private var lastPosition: Int64 = 0
+
+    init(total: Int64, report: @escaping @Sendable (Double) -> Void) {
+        self.total = max(total, 1)
+        self.report = report
+    }
+
+    func update(position: Int64) {
+        lock.lock()
+        if position < lastPosition { completed += lastPosition }
+        lastPosition = position
+        let value = min(max(Double(completed + position) / Double(total), 0), 0.99)
+        lock.unlock()
+        report(value)
+    }
+}
+
+nonisolated private let minizipProgressCallback: MinizipProgressCallback = { _, userdata, _, position in
+    guard let userdata else { return 0 }
+    Unmanaged<MinizipProgressBox>.fromOpaque(userdata).takeUnretainedValue().update(position: position)
+    return 0
+}
 
 struct ZIPArchiveExtractor: ArchiveExtractor {
-    let format: ArchiveFormat = .zip
+    nonisolated let format: ArchiveFormat = .zip
 
-    func canHandle(_ urls: [URL]) -> Bool {
+    nonisolated func canHandle(_ urls: [URL]) -> Bool {
         urls.contains { url in
             let ext = url.pathExtension.lowercased()
             return ext == "zip" || ext.range(of: #"z\d\d"#, options: .regularExpression) != nil
         }
     }
 
-    func extract(_ request: ArchiveRequest) async throws -> ArchiveResult {
+    nonisolated func extract(_ request: ArchiveRequest) async throws -> ArchiveResult {
+        try await Task.detached(priority: .userInitiated) {
+            try extractSynchronously(request)
+        }.value
+    }
+
+    nonisolated private func extractSynchronously(_ request: ArchiveRequest) throws -> ArchiveResult {
         let scoped = request.sourceURLs + [request.destinationURL]
         let accessed = scoped.map { $0.startAccessingSecurityScopedResource() }
         defer {
@@ -37,92 +95,77 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         try validateSplitVolumes(around: source, selected: request.sourceURLs)
         try FileManager.default.createDirectory(at: request.destinationURL, withIntermediateDirectories: true)
 
-        // Extract inside the source directory, then apply EasyUnpack's root-item policy.
+        // Read the central directory first so extraction can write straight to its visible final location.
         // The modern minizip-ng reader handles SFX/prepended data, ZipCrypto, WinZip AES and split disks.
-        let staging = request.destinationURL
-            .appendingPathComponent(".EasyUnpack-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
-        defer { try? FileManager.default.removeItem(at: staging) }
+        let rootItems = try archiveRootItems(in: source)
+        let extractionDestination: URL
+        if rootItems.count > 1 {
+            extractionDestination = request.destinationURL.appendingPathComponent(
+                source.deletingPathExtension().lastPathComponent,
+                isDirectory: true
+            )
+        } else {
+            extractionDestination = request.destinationURL
+        }
+        try FileManager.default.createDirectory(at: extractionDestination, withIntermediateDirectories: true)
 
+        var sizeError: NSError?
+        let totalSize = SSZipArchive.payloadSizeForArchive(atPath: source.path, error: &sizeError).int64Value
         let status = extractWithMinizip(
             source: source,
-            destination: staging,
-            password: request.password.flatMap { $0.isEmpty ? nil : $0 }
+            destination: extractionDestination,
+            password: request.password.flatMap { $0.isEmpty ? nil : $0 },
+            totalSize: totalSize,
+            progress: request.progress
         )
         guard status == 0 else { throw mapFailure(status) }
-        try removeMacOSMetadataDirectory(from: staging)
-
-        let actualDestination = try placeExtractedItems(
-            from: staging,
-            beside: source,
-            parent: request.destinationURL
-        )
-        return ArchiveResult(destinationURL: actualDestination, format: format)
+        request.progress?(1)
+        try removeMacOSMetadataDirectory(from: extractionDestination)
+        return ArchiveResult(destinationURL: extractionDestination, format: format)
     }
 
-    private func removeMacOSMetadataDirectory(from staging: URL) throws {
+    nonisolated private func removeMacOSMetadataDirectory(from staging: URL) throws {
         let metadata = staging.appendingPathComponent("__MACOSX", isDirectory: true)
         if FileManager.default.fileExists(atPath: metadata.path) {
             try FileManager.default.removeItem(at: metadata)
         }
     }
 
-    private func placeExtractedItems(from staging: URL, beside source: URL, parent: URL) throws -> URL {
-        let manager = FileManager.default
-        let allItems = try manager.contentsOfDirectory(
-            at: staging,
-            includingPropertiesForKeys: nil,
-            options: []
-        )
-        let meaningfulItems = allItems.filter { $0.lastPathComponent != "__MACOSX" }
+    nonisolated private func archiveRootItems(in source: URL) throws -> Set<String> {
+        let archive = source.path.withCString { unzOpen64(UnsafeRawPointer($0)) }
+        guard let archive else { throw ArchiveError.damagedArchive }
+        defer { _ = unzClose(archive) }
 
-        if meaningfulItems.count > 1 {
-            let container = parent.appendingPathComponent(
-                source.deletingPathExtension().lastPathComponent,
-                isDirectory: true
-            )
-            try manager.createDirectory(at: container, withIntermediateDirectories: true)
-            for item in meaningfulItems {
-                try merge(item, into: container.appendingPathComponent(item.lastPathComponent))
+        var roots = Set<String>()
+        var status = unzGoToFirstFile(archive)
+        while status == 0 {
+            var buffer = [CChar](repeating: 0, count: 65_536)
+            let infoStatus = buffer.withUnsafeMutableBufferPointer { pointer in
+                unzGetCurrentFileInfo64(
+                    archive, nil, pointer.baseAddress, UInt(pointer.count),
+                    nil, 0, nil, 0
+                )
             }
-            return container
+            guard infoStatus == 0 else { throw ArchiveError.damagedArchive }
+            let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+            let path = String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "\\", with: "/")
+            if let root = path.split(separator: "/", omittingEmptySubsequences: true).first,
+               root != "__MACOSX" {
+                roots.insert(String(root))
+            }
+            status = unzGoToNextFile(archive)
         }
-
-        for item in meaningfulItems {
-            try merge(item, into: parent.appendingPathComponent(item.lastPathComponent))
-        }
-        return parent
+        return roots
     }
 
-    private func merge(_ source: URL, into destination: URL) throws {
-        let manager = FileManager.default
-        var isDirectory: ObjCBool = false
-        let sourceExists = manager.fileExists(atPath: source.path, isDirectory: &isDirectory)
-        guard sourceExists else { return }
-
-        var destinationIsDirectory: ObjCBool = false
-        let destinationExists = manager.fileExists(atPath: destination.path, isDirectory: &destinationIsDirectory)
-        if isDirectory.boolValue, destinationExists, destinationIsDirectory.boolValue {
-            let children = try manager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
-            for child in children {
-                try merge(child, into: destination.appendingPathComponent(child.lastPathComponent))
-            }
-            try manager.removeItem(at: source)
-            return
-        }
-
-        if destinationExists { try manager.removeItem(at: destination) }
-        try manager.moveItem(at: source, to: destination)
-    }
-
-    private func mainZIP(in urls: [URL]) throws -> URL {
+    nonisolated private func mainZIP(in urls: [URL]) throws -> URL {
         guard let main = urls.first(where: { $0.pathExtension.lowercased() == "zip" }) else {
             throw ArchiveError.missingMainVolume
         }
         return main
     }
 
-    private func validateSplitVolumes(around main: URL, selected urls: [URL]) throws {
+    nonisolated private func validateSplitVolumes(around main: URL, selected urls: [URL]) throws {
         let volumeNumbers = urls.compactMap { url -> Int? in
             let ext = url.pathExtension.lowercased()
             guard ext.hasPrefix("z"), ext.count == 3 else { return nil }
@@ -137,7 +180,13 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         }
     }
 
-    private func extractWithMinizip(source: URL, destination: URL, password: String?) -> Int32 {
+    nonisolated private func extractWithMinizip(
+        source: URL,
+        destination: URL,
+        password: String?,
+        totalSize: Int64,
+        progress: (@Sendable (Double) -> Void)?
+    ) -> Int32 {
         var reader: UnsafeMutableRawPointer?
         guard mzZipReaderCreate(&reader) != nil, let reader else { return -104 }
         defer {
@@ -149,6 +198,19 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         let openStatus = source.path.withCString { mzZipReaderOpenFile(reader, $0) }
         guard openStatus == 0 else { return openStatus }
 
+        var progressBox: MinizipProgressBox?
+        if let progress, totalSize > 0 {
+            let box = MinizipProgressBox(total: totalSize, report: progress)
+            progressBox = box
+            mzZipReaderSetProgressInterval(reader, 100)
+            mzZipReaderSetProgressCallback(
+                reader,
+                Unmanaged.passUnretained(box).toOpaque(),
+                minizipProgressCallback
+            )
+        }
+        defer { withExtendedLifetime(progressBox) {} }
+
         let save: () -> Int32 = {
             destination.path.withCString { mzZipReaderSaveAll(reader, $0) }
         }
@@ -159,7 +221,7 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         }
     }
 
-    private func mapFailure(_ status: Int32) -> ArchiveError {
+    nonisolated private func mapFailure(_ status: Int32) -> ArchiveError {
         switch status {
         case -108: return .invalidPassword
         case -103, -105, -106: return .damagedArchive

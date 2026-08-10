@@ -9,11 +9,11 @@ final class ExtractionViewModel {
     var destinationURL: URL?
     var password = ""
     var isExtracting = false
+    var extractionProgress = 0.0
     var message: String?
     var isError = false
 
     private let service = ArchiveService()
-    @ObservationIgnored private var finderExtractionTask: Task<Void, Never>?
     @ObservationIgnored private var didReadPasteboard = false
 
     var sourceSummary: String {
@@ -42,11 +42,11 @@ final class ExtractionViewModel {
     func acceptOpenedFiles(_ urls: [URL]) {
         var archiveURLs = urls.filter { url in
             let ext = url.pathExtension.lowercased()
-            return ext == "zip" || ext.range(of: #"z\d\d"#, options: .regularExpression) != nil
+            return ext == "zip" || ext == "tar" || ext.range(of: #"z\d\d"#, options: .regularExpression) != nil
         }
         guard !archiveURLs.isEmpty else {
             isError = true
-            message = "Finder 传入的文件不是受支持的 ZIP 文件。"
+            message = "Finder 传入的文件不是受支持的 ZIP 或 TAR 文件。"
             return
         }
 
@@ -66,14 +66,12 @@ final class ExtractionViewModel {
         isError = false
         message = "已从 Finder 接收文件，将解压到压缩包所在目录。"
 
-        // Finder may deliver a multi-selection as several callbacks. Wait briefly so split volumes can be collected.
-        if sourceURLs.contains(where: { $0.pathExtension.lowercased() == "zip" }) {
-            finderExtractionTask?.cancel()
-            finderExtractionTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled else { return }
-                self?.extract()
-            }
+        // Split ZIP volumes are discovered from the archive's directory, so extraction can start immediately.
+        if sourceURLs.contains(where: {
+            let ext = $0.pathExtension.lowercased()
+            return ext == "zip" || ext == "tar"
+        }) {
+            extract()
         }
     }
 
@@ -83,7 +81,7 @@ final class ExtractionViewModel {
         panel.prompt = "选择"
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.zip, .data]
+        panel.allowedContentTypes = [.zip, UTType(filenameExtension: "tar") ?? .data, .data]
         guard panel.runModal() == .OK else { return }
         sourceURLs = panel.urls
         if let main = sourceURLs.first(where: { $0.pathExtension.lowercased() == "zip" }) {
@@ -101,11 +99,15 @@ final class ExtractionViewModel {
         }
         self.destinationURL = destinationURL
         isExtracting = true
+        extractionProgress = 0
         message = nil
         let request = ArchiveRequest(
             sourceURLs: sourceURLs,
             destinationURL: destinationURL,
-            password: password.isEmpty ? nil : password
+            password: password.isEmpty ? nil : password,
+            progress: { [self] value in
+                Task { @MainActor in extractionProgress = value }
+            }
         )
         Task {
             do {
@@ -119,6 +121,7 @@ final class ExtractionViewModel {
                 message = error.localizedDescription
             }
             isExtracting = false
+            extractionProgress = 0
         }
     }
 

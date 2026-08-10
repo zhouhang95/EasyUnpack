@@ -3,11 +3,11 @@ import Foundation
 final class ArchiveService: Sendable {
     private let extractors: [any ArchiveExtractor]
 
-    init(extractors: [any ArchiveExtractor] = [ZIPArchiveExtractor()]) {
+    init(extractors: [any ArchiveExtractor] = [ZIPArchiveExtractor(), TARArchiveExtractor()]) {
         self.extractors = extractors
     }
 
-    func extract(_ request: ArchiveRequest) async throws -> ArchiveResult {
+    nonisolated func extract(_ request: ArchiveRequest) async throws -> ArchiveResult {
         guard !request.sourceURLs.isEmpty else { throw ArchiveError.noSource }
         guard let extractor = extractors.first(where: { $0.canHandle(request.sourceURLs) }) else {
             throw ArchiveError.unsupportedFormat(request.sourceURLs[0].pathExtension)

@@ -32,6 +32,15 @@ struct ContentView: View {
                     .textSelection(.enabled)
             }
 
+            if model.isExtracting {
+                VStack(alignment: .leading, spacing: 5) {
+                    ProgressView(value: model.extractionProgress)
+                    Text("正在解压 \(Int(model.extractionProgress * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             HStack {
                 Text("解压到当前目录，成功后原压缩文件将移到废纸篓")
                     .font(.caption).foregroundStyle(.secondary)
