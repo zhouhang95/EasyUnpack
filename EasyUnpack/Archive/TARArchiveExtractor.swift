@@ -4,7 +4,7 @@ struct TARArchiveExtractor: ArchiveExtractor {
     nonisolated let format: ArchiveFormat = .tar
 
     nonisolated func canHandle(_ urls: [URL]) -> Bool {
-        urls.count == 1 && urls[0].pathExtension.lowercased() == "tar"
+        urls.count == 1 && ArchiveFormatDetector.detect(urls[0]) == .tar
     }
 
     nonisolated func extract(_ request: ArchiveRequest) async throws -> ArchiveResult {

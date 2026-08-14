@@ -19,7 +19,7 @@ struct SevenZipArchiveExtractor: ArchiveExtractor {
     nonisolated func canHandle(_ urls: [URL]) -> Bool {
         urls.contains { url in
             let ext = url.pathExtension.lowercased()
-            return ext == "7z" || ext == "001"
+            return ArchiveFormatDetector.detect(url) == .sevenZ || ext == "001"
         }
     }
 
@@ -30,10 +30,10 @@ struct SevenZipArchiveExtractor: ArchiveExtractor {
     }
 
     nonisolated private func extractSynchronously(_ request: ArchiveRequest) throws -> ArchiveResult {
-        guard let source = request.sourceURLs.first(where: {
-            let ext = $0.pathExtension.lowercased()
-            return ext == "7z" || ext == "001"
-        }) else { throw ArchiveError.noSource }
+        guard let source = request.sourceURLs.first(where: { ArchiveFormatDetector.detect($0) == .sevenZ })
+            ?? request.sourceURLs.first(where: { $0.pathExtension.lowercased() == "001" }) else {
+            throw ArchiveError.noSource
+        }
         let scoped = request.sourceURLs + [request.destinationURL]
         let accessed = scoped.map { $0.startAccessingSecurityScopedResource() }
         defer {

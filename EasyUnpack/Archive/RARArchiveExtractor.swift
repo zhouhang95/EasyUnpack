@@ -55,7 +55,7 @@ struct RARArchiveExtractor: ArchiveExtractor {
     nonisolated let format: ArchiveFormat = .rar
 
     nonisolated func canHandle(_ urls: [URL]) -> Bool {
-        urls.contains { $0.pathExtension.lowercased() == "rar" }
+        urls.contains { ArchiveFormatDetector.detect($0) == .rar }
     }
 
     nonisolated func extract(_ request: ArchiveRequest) async throws -> ArchiveResult {
@@ -162,7 +162,7 @@ struct RARArchiveExtractor: ArchiveExtractor {
     }
 
     nonisolated private func firstRAR(in urls: [URL]) -> URL? {
-        let rarFiles = urls.filter { $0.pathExtension.lowercased() == "rar" }
+        let rarFiles = urls.filter { ArchiveFormatDetector.detect($0) == .rar || $0.pathExtension.lowercased() == "rar" }
         return rarFiles.first(where: { $0.lastPathComponent.range(of: #"\.part0*1\.rar$"#, options: [.regularExpression, .caseInsensitive]) != nil })
             ?? rarFiles.first
     }

@@ -10,11 +10,13 @@ final class ExtractionViewModel {
     var password = ""
     var isExtracting = false
     var extractionProgress = 0.0
+    var elapsedSeconds = 0
     var message: String?
     var isError = false
 
     private let service = ArchiveService()
     @ObservationIgnored private var didReadPasteboard = false
+    @ObservationIgnored private var elapsedTask: Task<Void, Never>?
 
     var sourceSummary: String {
         guard !sourceURLs.isEmpty else { return "尚未选择" }
@@ -25,6 +27,15 @@ final class ExtractionViewModel {
     var archiveDirectory: URL? {
         let mainArchive = sourceURLs.first(where: { $0.pathExtension.lowercased() == "zip" }) ?? sourceURLs.first
         return mainArchive?.deletingLastPathComponent()
+    }
+
+    var elapsedText: String {
+        let hours = elapsedSeconds / 3600
+        let minutes = elapsedSeconds % 3600 / 60
+        let seconds = elapsedSeconds % 60
+        return hours > 0
+            ? String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+            : String(format: "%02d:%02d", minutes, seconds)
     }
 
     func loadPasswordFromPasteboardIfNeeded() {
@@ -49,8 +60,9 @@ final class ExtractionViewModel {
 
     private func acceptFiles(_ urls: [URL], autoExtract: Bool) {
         var archiveURLs = urls.filter { url in
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return false }
             let ext = url.pathExtension.lowercased()
-            return ext == "zip" || ext == "tar" || ext == "7z" || ext == "rar" || ext == "001" ||
+            return ArchiveFormatDetector.detect(url) != nil || ext == "001" ||
                 ext.range(of: #"[zr]\d\d"#, options: .regularExpression) != nil
         }
         guard !archiveURLs.isEmpty else {
@@ -59,11 +71,13 @@ final class ExtractionViewModel {
             return
         }
 
-        if let main = archiveURLs.first(where: { $0.pathExtension.lowercased() == "zip" }) {
+        if let main = archiveURLs.first(where: { ArchiveFormatDetector.detect($0) == .zip }) {
             archiveURLs = Array(Set(archiveURLs + relatedVolumes(for: main)))
-        } else if let firstVolume = archiveURLs.first(where: { $0.pathExtension == "001" }) {
+        } else if let firstVolume = archiveURLs.first(where: {
+            ArchiveFormatDetector.detect($0) == .sevenZ || $0.pathExtension == "001"
+        }) {
             archiveURLs = Array(Set(archiveURLs + relatedSevenZipVolumes(for: firstVolume)))
-        } else if let mainRAR = archiveURLs.first(where: { $0.pathExtension.lowercased() == "rar" }) {
+        } else if let mainRAR = archiveURLs.first(where: { ArchiveFormatDetector.detect($0) == .rar }) {
             archiveURLs = Array(Set(archiveURLs + relatedRARVolumes(for: mainRAR)))
         }
 
@@ -79,10 +93,8 @@ final class ExtractionViewModel {
         isError = false
         message = autoExtract ? "已从 Finder 接收文件，将解压到压缩包所在目录。" : nil
 
-        // Split ZIP volumes are discovered from the archive's directory, so extraction can start immediately.
         if autoExtract, sourceURLs.contains(where: {
-            let ext = $0.pathExtension.lowercased()
-            return ext == "zip" || ext == "tar" || ext == "7z" || ext == "rar" || ext == "001"
+            ArchiveFormatDetector.detect($0) != nil || $0.pathExtension.lowercased() == "001"
         }) {
             extract()
         }
@@ -102,16 +114,7 @@ final class ExtractionViewModel {
             .data
         ]
         guard panel.runModal() == .OK else { return }
-        sourceURLs = panel.urls
-        if let main = sourceURLs.first(where: { $0.pathExtension.lowercased() == "zip" }) {
-            sourceURLs = Array(Set(sourceURLs + relatedVolumes(for: main)))
-        } else if let firstVolume = sourceURLs.first(where: { $0.pathExtension == "001" }) {
-            sourceURLs = Array(Set(sourceURLs + relatedSevenZipVolumes(for: firstVolume)))
-        } else if let mainRAR = sourceURLs.first(where: { $0.pathExtension.lowercased() == "rar" }) {
-            sourceURLs = Array(Set(sourceURLs + relatedRARVolumes(for: mainRAR)))
-        }
-        destinationURL = archiveDirectory
-        message = nil
+        acceptFiles(panel.urls, autoExtract: false)
     }
 
     func extract() {
@@ -123,6 +126,7 @@ final class ExtractionViewModel {
         self.destinationURL = destinationURL
         isExtracting = true
         extractionProgress = 0
+        startElapsedTimer()
         message = nil
         let request = ArchiveRequest(
             sourceURLs: sourceURLs,
@@ -140,11 +144,29 @@ final class ExtractionViewModel {
                 message = "解压完成：\(result.destinationURL.path)"
                 NSApp.terminate(nil)
             } catch {
+                if let archiveError = error as? ArchiveError,
+                   case .invalidPassword = archiveError {
+                    password = ""
+                }
                 isError = true
                 message = error.localizedDescription
             }
             isExtracting = false
+            elapsedTask?.cancel()
+            elapsedTask = nil
             extractionProgress = 0
+        }
+    }
+
+    private func startElapsedTimer() {
+        elapsedTask?.cancel()
+        elapsedSeconds = 0
+        elapsedTask = Task { @MainActor [self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                elapsedSeconds += 1
+            }
         }
     }
 

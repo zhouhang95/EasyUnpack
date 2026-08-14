@@ -56,9 +56,13 @@ struct ContentView: View {
             if model.isExtracting {
                 VStack(alignment: .leading, spacing: 5) {
                     ProgressView(value: model.extractionProgress)
-                    Text("正在解压 \(Int(model.extractionProgress * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack {
+                        Text("正在解压 \(Int(model.extractionProgress * 100))%")
+                        Spacer()
+                        Text("已用时 \(model.elapsedText)")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
 

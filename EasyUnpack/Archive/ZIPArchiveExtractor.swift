@@ -1,4 +1,6 @@
 import Foundation
+import CoreFoundation
+import Darwin
 import ZipArchive
 
 @_silgen_name("mz_zip_reader_create")
@@ -9,6 +11,8 @@ nonisolated private func mzZipReaderDelete(_ handle: UnsafeMutablePointer<Unsafe
 nonisolated private func mzZipReaderOpenFile(_ handle: UnsafeMutableRawPointer?, _ path: UnsafePointer<CChar>) -> Int32
 @_silgen_name("mz_zip_reader_set_password")
 nonisolated private func mzZipReaderSetPassword(_ handle: UnsafeMutableRawPointer?, _ password: UnsafePointer<CChar>)
+@_silgen_name("mz_zip_reader_set_encoding")
+nonisolated private func mzZipReaderSetEncoding(_ handle: UnsafeMutableRawPointer?, _ encoding: Int32)
 @_silgen_name("mz_zip_reader_save_all")
 nonisolated private func mzZipReaderSaveAll(_ handle: UnsafeMutableRawPointer?, _ destination: UnsafePointer<CChar>) -> Int32
 @_silgen_name("mz_zip_reader_close")
@@ -24,6 +28,10 @@ nonisolated private func mzZipReaderSetProgressCallback(
 nonisolated private func mzZipReaderSetProgressInterval(_ handle: UnsafeMutableRawPointer?, _ milliseconds: UInt32)
 @_silgen_name("unzOpen64")
 nonisolated private func unzOpen64(_ path: UnsafeRawPointer?) -> UnsafeMutableRawPointer?
+@_silgen_name("unzOpen2_64")
+nonisolated private func unzOpen2_64(
+    _ path: UnsafeRawPointer?, _ fileFunctions: UnsafeMutableRawPointer?
+) -> UnsafeMutableRawPointer?
 @_silgen_name("unzClose")
 nonisolated private func unzClose(_ handle: UnsafeMutableRawPointer?) -> Int32
 @_silgen_name("unzGoToFirstFile")
@@ -37,6 +45,16 @@ nonisolated private func unzGetCurrentFileInfo64(
     _ extra: UnsafeMutableRawPointer?, _ extraSize: UInt,
     _ comment: UnsafeMutablePointer<CChar>?, _ commentSize: UInt
 ) -> Int32
+@_silgen_name("unzOpenCurrentFilePassword")
+nonisolated private func unzOpenCurrentFilePassword(
+    _ handle: UnsafeMutableRawPointer?, _ password: UnsafePointer<CChar>?
+) -> Int32
+@_silgen_name("unzReadCurrentFile")
+nonisolated private func unzReadCurrentFile(
+    _ handle: UnsafeMutableRawPointer?, _ buffer: UnsafeMutableRawPointer?, _ length: UInt32
+) -> Int32
+@_silgen_name("unzCloseCurrentFile")
+nonisolated private func unzCloseCurrentFile(_ handle: UnsafeMutableRawPointer?) -> Int32
 
 nonisolated private final class MinizipProgressBox: @unchecked Sendable {
     private let lock = NSLock()
@@ -66,13 +84,84 @@ nonisolated private let minizipProgressCallback: MinizipProgressCallback = { _, 
     return 0
 }
 
+nonisolated private final class OffsetZIPFile: @unchecked Sendable {
+    let path: String
+    let offset: UInt64
+
+    init(path: String, offset: UInt64) {
+        self.path = path
+        self.offset = offset
+    }
+}
+
+private typealias ZipOpenCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?, Int32) -> UnsafeMutableRawPointer?
+private typealias ZipReadCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UInt) -> UInt
+private typealias ZipWriteCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeRawPointer?, UInt) -> UInt
+private typealias ZipTellCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> UInt64
+private typealias ZipSeekCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UInt64, Int32) -> Int
+private typealias ZipCloseCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Int32
+private typealias ZipErrorCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Int32
+
+private struct ZipFileFunctions64 {
+    var open: ZipOpenCallback?
+    var read: ZipReadCallback?
+    var write: ZipWriteCallback?
+    var tell: ZipTellCallback?
+    var seek: ZipSeekCallback?
+    var close: ZipCloseCallback?
+    var error: ZipErrorCallback?
+    var opaque: UnsafeMutableRawPointer?
+}
+
+nonisolated private let offsetZipOpen: ZipOpenCallback = { opaque, _, _ in
+    guard let opaque else { return nil }
+    let box = Unmanaged<OffsetZIPFile>.fromOpaque(opaque).takeUnretainedValue()
+    guard let file = fopen(box.path, "rb") else { return nil }
+    guard fseeko(file, off_t(box.offset), SEEK_SET) == 0 else {
+        fclose(file)
+        return nil
+    }
+    return UnsafeMutableRawPointer(file)
+}
+nonisolated private let offsetZipRead: ZipReadCallback = { _, stream, buffer, size in
+    guard let stream, let buffer else { return 0 }
+    return UInt(fread(buffer, 1, Int(size), stream.assumingMemoryBound(to: FILE.self)))
+}
+nonisolated private let offsetZipWrite: ZipWriteCallback = { _, _, _, _ in 0 }
+nonisolated private let offsetZipTell: ZipTellCallback = { opaque, stream in
+    guard let opaque, let stream else { return UInt64.max }
+    let box = Unmanaged<OffsetZIPFile>.fromOpaque(opaque).takeUnretainedValue()
+    let position = ftello(stream.assumingMemoryBound(to: FILE.self))
+    guard position >= off_t(box.offset) else { return UInt64.max }
+    return UInt64(position) - box.offset
+}
+nonisolated private let offsetZipSeek: ZipSeekCallback = { opaque, stream, offset, origin in
+    guard let opaque, let stream else { return -1 }
+    let box = Unmanaged<OffsetZIPFile>.fromOpaque(opaque).takeUnretainedValue()
+    let file = stream.assumingMemoryBound(to: FILE.self)
+    switch origin {
+    case 0: return Int(fseeko(file, off_t(box.offset + offset), SEEK_SET))
+    case 1: return Int(fseeko(file, off_t(offset), SEEK_CUR))
+    case 2: return Int(fseeko(file, off_t(offset), SEEK_END))
+    default: return -1
+    }
+}
+nonisolated private let offsetZipClose: ZipCloseCallback = { _, stream in
+    guard let stream else { return -1 }
+    return fclose(stream.assumingMemoryBound(to: FILE.self))
+}
+nonisolated private let offsetZipError: ZipErrorCallback = { _, stream in
+    guard let stream else { return -1 }
+    return ferror(stream.assumingMemoryBound(to: FILE.self))
+}
+
 struct ZIPArchiveExtractor: ArchiveExtractor {
     nonisolated let format: ArchiveFormat = .zip
 
     nonisolated func canHandle(_ urls: [URL]) -> Bool {
         urls.contains { url in
             let ext = url.pathExtension.lowercased()
-            return ext == "zip" || ext.range(of: #"z\d\d"#, options: .regularExpression) != nil
+            return ArchiveFormatDetector.detect(url) == .zip || ext.range(of: #"z\d\d"#, options: .regularExpression) != nil
         }
     }
 
@@ -97,9 +186,10 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
 
         // Read the central directory first so extraction can write straight to its visible final location.
         // The modern minizip-ng reader handles SFX/prepended data, ZipCrypto, WinZip AES and split disks.
-        let rootItems = try archiveRootItems(in: source)
+        let embeddedOffset = embeddedZIPOffset(in: source)
+        let catalog = try archiveCatalog(in: source, embeddedOffset: embeddedOffset)
         let extractionDestination: URL
-        if rootItems.count > 1 {
+        if catalog.roots.count > 1 {
             extractionDestination = request.destinationURL.appendingPathComponent(
                 source.deletingPathExtension().lastPathComponent,
                 isDirectory: true
@@ -109,16 +199,18 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         }
         try FileManager.default.createDirectory(at: extractionDestination, withIntermediateDirectories: true)
 
-        var sizeError: NSError?
-        let totalSize = SSZipArchive.payloadSizeForArchive(atPath: source.path, error: &sizeError).int64Value
-        let status = extractWithMinizip(
+        let status = extractEntries(
             source: source,
             destination: extractionDestination,
             password: request.password.flatMap { $0.isEmpty ? nil : $0 },
-            totalSize: totalSize,
+            totalSize: catalog.totalSize,
+            embeddedOffset: embeddedOffset,
             progress: request.progress
         )
-        guard status == 0 else { throw mapFailure(status) }
+        guard status == 0 else {
+            NSLog("EasyUnpack ZIP extraction failed with minizip status %d for %@", status, source.path)
+            throw mapFailure(status)
+        }
         request.progress?(1)
         try removeMacOSMetadataDirectory(from: extractionDestination)
         return ArchiveResult(destinationURL: extractionDestination, format: format)
@@ -131,26 +223,26 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         }
     }
 
-    nonisolated private func archiveRootItems(in source: URL) throws -> Set<String> {
-        let archive = source.path.withCString { unzOpen64(UnsafeRawPointer($0)) }
-        guard let archive else { throw ArchiveError.damagedArchive }
+    nonisolated private struct ArchiveCatalog {
+        let roots: Set<String>
+        let totalSize: UInt64
+    }
+
+    nonisolated private func archiveCatalog(in source: URL, embeddedOffset: UInt64) throws -> ArchiveCatalog {
+        guard let opened = openArchive(source, embeddedOffset: embeddedOffset) else {
+            throw ArchiveError.damagedArchive
+        }
+        let (archive, offsetBox) = opened
         defer { _ = unzClose(archive) }
+        defer { withExtendedLifetime(offsetBox) {} }
 
         var roots = Set<String>()
+        var totalSize: UInt64 = 0
         var status = unzGoToFirstFile(archive)
         while status == 0 {
-            // minizip's compatibility API narrows this value to UInt16 internally.
-            // Passing 65_536 wraps to zero and returns an empty filename.
-            var buffer = [CChar](repeating: 0, count: 65_535)
-            let infoStatus = buffer.withUnsafeMutableBufferPointer { pointer in
-                unzGetCurrentFileInfo64(
-                    archive, nil, pointer.baseAddress, UInt(pointer.count),
-                    nil, 0, nil, 0
-                )
-            }
-            guard infoStatus == 0 else { throw ArchiveError.damagedArchive }
-            let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-            let path = String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "\\", with: "/")
+            let entry = try readEntryInfo(from: archive)
+            totalSize &+= entry.uncompressedSize
+            let path = entry.path.replacingOccurrences(of: "\\", with: "/")
             if let root = path.split(separator: "/", omittingEmptySubsequences: true).first,
                root != "__MACOSX" {
                 roots.insert(String(root))
@@ -158,11 +250,11 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
             status = unzGoToNextFile(archive)
         }
         guard status == -100 else { throw ArchiveError.damagedArchive }
-        return roots
+        return ArchiveCatalog(roots: roots, totalSize: totalSize)
     }
 
     nonisolated private func mainZIP(in urls: [URL]) throws -> URL {
-        guard let main = urls.first(where: { $0.pathExtension.lowercased() == "zip" }) else {
+        guard let main = urls.first(where: { ArchiveFormatDetector.detect($0) == .zip }) else {
             throw ArchiveError.missingMainVolume
         }
         return main
@@ -183,45 +275,240 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         }
     }
 
-    nonisolated private func extractWithMinizip(
+    nonisolated private struct EntryInfo {
+        let path: String
+        let uncompressedSize: UInt64
+        let isDirectory: Bool
+    }
+
+    nonisolated private func readEntryInfo(from archive: UnsafeMutableRawPointer) throws -> EntryInfo {
+        var info = unz_file_info64()
+        guard unzGetCurrentFileInfo64(archive, &info, nil, 0, nil, 0, nil, 0) == 0 else {
+            throw ArchiveError.damagedArchive
+        }
+        var filename = [CChar](repeating: 0, count: Int(info.size_filename) + 1)
+        var extra = [UInt8](repeating: 0, count: Int(info.size_file_extra))
+        let status = filename.withUnsafeMutableBufferPointer { namePointer in
+            extra.withUnsafeMutableBytes { extraPointer in
+                unzGetCurrentFileInfo64(
+                    archive, &info, namePointer.baseAddress, UInt(namePointer.count),
+                    extraPointer.baseAddress, UInt(extraPointer.count), nil, 0
+                )
+            }
+        }
+        guard status == 0 else { throw ArchiveError.damagedArchive }
+        let rawName = Data(filename.prefix(Int(info.size_filename)).map { UInt8(bitPattern: $0) })
+        let path = unicodePath(in: Data(extra))
+            ?? decodeLegacyFilename(rawName, utf8Flag: (info.flag & (1 << 11)) != 0)
+        guard let path, !path.isEmpty else { throw ArchiveError.damagedArchive }
+        return EntryInfo(
+            path: path,
+            uncompressedSize: info.uncompressed_size,
+            isDirectory: rawName.last == 0x2F || rawName.last == 0x5C
+        )
+    }
+
+    nonisolated private func unicodePath(in extra: Data) -> String? {
+        var offset = 0
+        while offset + 4 <= extra.count {
+            let id = UInt16(extra[offset]) | UInt16(extra[offset + 1]) << 8
+            let length = Int(extra[offset + 2]) | Int(extra[offset + 3]) << 8
+            let valueStart = offset + 4
+            let valueEnd = valueStart + length
+            guard valueEnd <= extra.count else { return nil }
+            if id == 0x7075, length >= 5, extra[valueStart] == 1 {
+                return String(data: extra[(valueStart + 5)..<valueEnd], encoding: .utf8)
+            }
+            offset = valueEnd
+        }
+        return nil
+    }
+
+    nonisolated private func decodeLegacyFilename(_ data: Data, utf8Flag: Bool) -> String? {
+        if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
+        if utf8Flag { return nil }
+        let gb18030 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+        ))
+        let cp949 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.dosKorean.rawValue)
+        ))
+        let candidates: [(text: String, language: LegacyFilenameLanguage)] = [
+            String(data: data, encoding: gb18030).map { ($0, .chinese) },
+            String(data: data, encoding: .shiftJIS).map { ($0, .japanese) },
+            String(data: data, encoding: cp949).map { ($0, .korean) },
+        ].compactMap { $0 }
+        return candidates.max { legacyFilenameScore($0) < legacyFilenameScore($1) }?.text
+            ?? String(data: data, encoding: .isoLatin1)
+    }
+
+    nonisolated private enum LegacyFilenameLanguage {
+        case chinese, japanese, korean
+    }
+
+    nonisolated private func legacyFilenameScore(
+        _ candidate: (text: String, language: LegacyFilenameLanguage)
+    ) -> Int {
+        var score = 0
+        for scalar in candidate.text.unicodeScalars {
+            let value = scalar.value
+            if CharacterSet.controlCharacters.contains(scalar) { score -= 100 }
+            if (0x3400...0x9FFF).contains(value) { score += 2 }
+            switch candidate.language {
+            case .chinese:
+                break
+            case .japanese:
+                if (0x3040...0x30FF).contains(value) || (0x31F0...0x31FF).contains(value) {
+                    score += 12
+                }
+            case .korean:
+                if (0x1100...0x11FF).contains(value) || (0x3130...0x318F).contains(value) ||
+                    (0xAC00...0xD7AF).contains(value) {
+                    score += 12
+                }
+            }
+        }
+        return score
+    }
+
+    nonisolated private func safeOutputURL(for path: String, under destination: URL) -> URL? {
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        guard !normalized.hasPrefix("/") else { return nil }
+        let components = normalized.split(separator: "/", omittingEmptySubsequences: true)
+        guard !components.isEmpty,
+              !components.contains(where: { $0 == "." || $0 == ".." }),
+              components.first != "__MACOSX" else { return nil }
+        return components.reduce(destination) { $0.appendingPathComponent(String($1)) }
+    }
+
+    nonisolated private func extractEntries(
         source: URL,
         destination: URL,
         password: String?,
-        totalSize: Int64,
+        totalSize: UInt64,
+        embeddedOffset: UInt64,
         progress: (@Sendable (Double) -> Void)?
     ) -> Int32 {
-        var reader: UnsafeMutableRawPointer?
-        guard mzZipReaderCreate(&reader) != nil, let reader else { return -104 }
-        defer {
-            _ = mzZipReaderClose(reader)
-            var handle: UnsafeMutableRawPointer? = reader
-            mzZipReaderDelete(&handle)
-        }
+        guard let opened = openArchive(source, embeddedOffset: embeddedOffset) else { return -104 }
+        let (archive, offsetBox) = opened
+        defer { _ = unzClose(archive) }
+        defer { withExtendedLifetime(offsetBox) {} }
 
-        let openStatus = source.path.withCString { mzZipReaderOpenFile(reader, $0) }
-        guard openStatus == 0 else { return openStatus }
+        var completed: UInt64 = 0
+        var status = unzGoToFirstFile(archive)
+        while status == 0 {
+            let entry: EntryInfo
+            do { entry = try readEntryInfo(from: archive) } catch { return -103 }
+            guard let output = safeOutputURL(for: entry.path, under: destination) else {
+                status = unzGoToNextFile(archive)
+                continue
+            }
+            do {
+                if entry.isDirectory {
+                    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+                } else {
+                    try FileManager.default.createDirectory(
+                        at: output.deletingLastPathComponent(), withIntermediateDirectories: true
+                    )
+                    _ = FileManager.default.createFile(atPath: output.path, contents: nil)
+                    let file = try FileHandle(forWritingTo: output)
+                    defer { try? file.close() }
 
-        var progressBox: MinizipProgressBox?
-        if let progress, totalSize > 0 {
-            let box = MinizipProgressBox(total: totalSize, report: progress)
-            progressBox = box
-            mzZipReaderSetProgressInterval(reader, 100)
-            mzZipReaderSetProgressCallback(
-                reader,
-                Unmanaged.passUnretained(box).toOpaque(),
-                minizipProgressCallback
-            )
+                    let openStatus: Int32 = if let password {
+                        password.withCString { unzOpenCurrentFilePassword(archive, $0) }
+                    } else {
+                        unzOpenCurrentFilePassword(archive, nil)
+                    }
+                    guard openStatus == 0 else { return openStatus }
+                    var buffer = [UInt8](repeating: 0, count: 256 * 1024)
+                    while true {
+                        let count = buffer.withUnsafeMutableBytes {
+                            unzReadCurrentFile(archive, $0.baseAddress, UInt32($0.count))
+                        }
+                        if count < 0 {
+                            _ = unzCloseCurrentFile(archive)
+                            return count
+                        }
+                        if count == 0 { break }
+                        try file.write(contentsOf: Data(buffer.prefix(Int(count))))
+                        completed &+= UInt64(count)
+                        progress?(min(Double(completed) / Double(max(totalSize, 1)), 0.99))
+                    }
+                    let closeStatus = unzCloseCurrentFile(archive)
+                    guard closeStatus == 0 else { return closeStatus }
+                }
+            } catch {
+                return -116
+            }
+            status = unzGoToNextFile(archive)
         }
-        defer { withExtendedLifetime(progressBox) {} }
+        return status == -100 ? 0 : status
+    }
 
-        let save: () -> Int32 = {
-            destination.path.withCString { mzZipReaderSaveAll(reader, $0) }
+    nonisolated private func openArchive(
+        _ source: URL, embeddedOffset: UInt64
+    ) -> (UnsafeMutableRawPointer, OffsetZIPFile?)? {
+        guard embeddedOffset > 0 else {
+            return source.path.withCString { path in
+                unzOpen64(UnsafeRawPointer(path)).map { ($0, nil) }
+            }
         }
-        guard let password else { return save() }
-        return password.withCString { pointer in
-            mzZipReaderSetPassword(reader, pointer)
-            return save()
+        let box = OffsetZIPFile(path: source.path, offset: embeddedOffset)
+        var functions = ZipFileFunctions64(
+            open: offsetZipOpen,
+            read: offsetZipRead,
+            write: offsetZipWrite,
+            tell: offsetZipTell,
+            seek: offsetZipSeek,
+            close: offsetZipClose,
+            error: offsetZipError,
+            opaque: Unmanaged.passUnretained(box).toOpaque()
+        )
+        let archive = withUnsafeMutablePointer(to: &functions) {
+            unzOpen2_64(nil, UnsafeMutableRawPointer($0))
         }
+        return archive.map { ($0, box) }
+    }
+
+    nonisolated private func embeddedZIPOffset(in source: URL) -> UInt64 {
+        guard let handle = try? FileHandle(forReadingFrom: source) else { return 0 }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return 0 }
+        let tailSize = min(size, 131_072)
+        try? handle.seek(toOffset: size - tailSize)
+        guard let tail = try? handle.read(upToCount: Int(tailSize)),
+              let eocd = tail.range(of: Data([0x50, 0x4B, 0x05, 0x06]), options: .backwards),
+              eocd.lowerBound + 20 <= tail.count else { return 0 }
+
+        func uint32(_ offset: Int) -> UInt64 {
+            UInt64(tail[offset]) |
+                UInt64(tail[offset + 1]) << 8 |
+                UInt64(tail[offset + 2]) << 16 |
+                UInt64(tail[offset + 3]) << 24
+        }
+        if eocd.lowerBound >= 20 {
+            let locatorStart = eocd.lowerBound - 20
+            let locatorSignature = Data([0x50, 0x4B, 0x06, 0x07])
+            if tail[locatorStart..<(locatorStart + 4)] == locatorSignature,
+               let zip64Range = tail[..<locatorStart].range(
+                   of: Data([0x50, 0x4B, 0x06, 0x06]), options: .backwards
+               ) {
+                let physicalZip64 = size - tailSize + UInt64(zip64Range.lowerBound)
+                func uint64(_ offset: Int) -> UInt64 {
+                    (0..<8).reduce(0) { result, byte in
+                        result | UInt64(tail[offset + byte]) << UInt64(byte * 8)
+                    }
+                }
+                let logicalZip64 = uint64(locatorStart + 8)
+                if physicalZip64 >= logicalZip64 { return physicalZip64 - logicalZip64 }
+            }
+        }
+        let centralSize = uint32(eocd.lowerBound + 12)
+        let centralOffset = uint32(eocd.lowerBound + 16)
+        guard centralSize != 0xFFFF_FFFF, centralOffset != 0xFFFF_FFFF else { return 0 }
+        let physicalEOCD = size - tailSize + UInt64(eocd.lowerBound)
+        let logicalEOCD = centralOffset + centralSize
+        return physicalEOCD >= logicalEOCD ? physicalEOCD - logicalEOCD : 0
     }
 
     nonisolated private func mapFailure(_ status: Int32) -> ArchiveError {

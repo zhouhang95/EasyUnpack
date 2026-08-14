@@ -9,6 +9,32 @@ enum ArchiveFormat: String, CaseIterable, Sendable {
     var displayName: String { rawValue.uppercased() }
 }
 
+enum ArchiveFormatDetector {
+    nonisolated static func detect(_ url: URL) -> ArchiveFormat? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        let prefix = (try? handle.read(upToCount: 512)) ?? Data()
+        if prefix.starts(with: [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) { return .sevenZ }
+        if prefix.starts(with: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07]) { return .rar }
+        if prefix.count >= 262,
+           prefix.subdata(in: 257..<262) == Data("ustar".utf8) { return .tar }
+
+        guard let size = try? handle.seekToEnd() else { return nil }
+        let tailSize = min(size, 131_072)
+        try? handle.seek(toOffset: size - tailSize)
+        let tail = (try? handle.read(upToCount: Int(tailSize))) ?? Data()
+        let zipSignatures = [
+            Data([0x50, 0x4B, 0x05, 0x06]), // end of central directory
+            Data([0x50, 0x4B, 0x06, 0x06]), // ZIP64 end of central directory
+        ]
+        if zipSignatures.contains(where: { tail.range(of: $0, options: .backwards) != nil }) {
+            return .zip
+        }
+        return nil
+    }
+}
+
 struct ArchiveRequest: Sendable {
     let sourceURLs: [URL]
     let destinationURL: URL
