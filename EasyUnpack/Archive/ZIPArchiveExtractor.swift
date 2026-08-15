@@ -15,6 +15,14 @@ nonisolated private func mzZipReaderSetPassword(_ handle: UnsafeMutableRawPointe
 nonisolated private func mzZipReaderSetEncoding(_ handle: UnsafeMutableRawPointer?, _ encoding: Int32)
 @_silgen_name("mz_zip_reader_save_all")
 nonisolated private func mzZipReaderSaveAll(_ handle: UnsafeMutableRawPointer?, _ destination: UnsafePointer<CChar>) -> Int32
+@_silgen_name("mz_zip_reader_goto_first_entry")
+nonisolated private func mzZipReaderGotoFirstEntry(_ handle: UnsafeMutableRawPointer?) -> Int32
+@_silgen_name("mz_zip_reader_goto_next_entry")
+nonisolated private func mzZipReaderGotoNextEntry(_ handle: UnsafeMutableRawPointer?) -> Int32
+@_silgen_name("mz_zip_reader_entry_save_file")
+nonisolated private func mzZipReaderEntrySaveFile(
+    _ handle: UnsafeMutableRawPointer?, _ path: UnsafePointer<CChar>
+) -> Int32
 @_silgen_name("mz_zip_reader_close")
 nonisolated private func mzZipReaderClose(_ handle: UnsafeMutableRawPointer?) -> Int32
 private typealias MinizipProgressCallback = @convention(c) (
@@ -199,14 +207,29 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         }
         try FileManager.default.createDirectory(at: extractionDestination, withIntermediateDirectories: true)
 
-        let status = extractEntries(
-            source: source,
-            destination: extractionDestination,
-            password: request.password.flatMap { $0.isEmpty ? nil : $0 },
-            totalSize: catalog.totalSize,
-            embeddedOffset: embeddedOffset,
-            progress: request.progress
-        )
+        let password = request.password.flatMap { $0.isEmpty ? nil : $0 }
+        let isSplitArchive = request.sourceURLs.contains {
+            $0.pathExtension.lowercased().range(of: #"z\d\d"#, options: .regularExpression) != nil
+        }
+        let status = if isSplitArchive {
+            extractSplitArchive(
+                source: source,
+                destination: extractionDestination,
+                password: password,
+                totalSize: catalog.totalSize,
+                entries: catalog.entries,
+                progress: request.progress
+            )
+        } else {
+            extractEntries(
+                source: source,
+                destination: extractionDestination,
+                password: password,
+                totalSize: catalog.totalSize,
+                embeddedOffset: embeddedOffset,
+                progress: request.progress
+            )
+        }
         guard status == 0 else {
             NSLog("EasyUnpack ZIP extraction failed with minizip status %d for %@", status, source.path)
             throw mapFailure(status)
@@ -226,6 +249,7 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
     nonisolated private struct ArchiveCatalog {
         let roots: Set<String>
         let totalSize: UInt64
+        let entries: [EntryInfo]
     }
 
     nonisolated private func archiveCatalog(in source: URL, embeddedOffset: UInt64) throws -> ArchiveCatalog {
@@ -238,9 +262,11 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
 
         var roots = Set<String>()
         var totalSize: UInt64 = 0
+        var entries: [EntryInfo] = []
         var status = unzGoToFirstFile(archive)
         while status == 0 {
             let entry = try readEntryInfo(from: archive)
+            entries.append(entry)
             totalSize &+= entry.uncompressedSize
             let path = entry.path.replacingOccurrences(of: "\\", with: "/")
             if let root = path.split(separator: "/", omittingEmptySubsequences: true).first,
@@ -250,7 +276,7 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
             status = unzGoToNextFile(archive)
         }
         guard status == -100 else { throw ArchiveError.damagedArchive }
-        return ArchiveCatalog(roots: roots, totalSize: totalSize)
+        return ArchiveCatalog(roots: roots, totalSize: totalSize, entries: entries)
     }
 
     nonisolated private func mainZIP(in urls: [URL]) throws -> URL {
@@ -279,6 +305,7 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         let path: String
         let uncompressedSize: UInt64
         let isDirectory: Bool
+        let isEncrypted: Bool
     }
 
     nonisolated private func readEntryInfo(from archive: UnsafeMutableRawPointer) throws -> EntryInfo {
@@ -304,7 +331,8 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         return EntryInfo(
             path: path,
             uncompressedSize: info.uncompressed_size,
-            isDirectory: rawName.last == 0x2F || rawName.last == 0x5C
+            isDirectory: rawName.last == 0x2F || rawName.last == 0x5C,
+            isEncrypted: (info.flag & 1) != 0
         )
     }
 
@@ -395,6 +423,8 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         defer { withExtendedLifetime(offsetBox) {} }
 
         var completed: UInt64 = 0
+        let passwordCandidates = password.map(passwordDataCandidates) ?? []
+        var selectedPassword: Data?
         var status = unzGoToFirstFile(archive)
         while status == 0 {
             let entry: EntryInfo
@@ -414,10 +444,21 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
                     let file = try FileHandle(forWritingTo: output)
                     defer { try? file.close() }
 
-                    let openStatus: Int32 = if let password {
-                        password.withCString { unzOpenCurrentFilePassword(archive, $0) }
+                    let openStatus: Int32
+                    if !entry.isEncrypted {
+                        openStatus = unzOpenCurrentFilePassword(archive, nil)
+                    } else if let selectedPassword {
+                        openStatus = openCurrentFile(archive, password: selectedPassword)
                     } else {
-                        unzOpenCurrentFilePassword(archive, nil)
+                        var candidateStatus: Int32 = -108
+                        for candidate in passwordCandidates {
+                            candidateStatus = openCurrentFile(archive, password: candidate)
+                            if candidateStatus == 0 {
+                                selectedPassword = candidate
+                                break
+                            }
+                        }
+                        openStatus = candidateStatus
                     }
                     guard openStatus == 0 else { return openStatus }
                     var buffer = [UInt8](repeating: 0, count: 256 * 1024)
@@ -443,6 +484,97 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
             status = unzGoToNextFile(archive)
         }
         return status == -100 ? 0 : status
+    }
+
+    nonisolated private func extractSplitArchive(
+        source: URL,
+        destination: URL,
+        password: String?,
+        totalSize: UInt64,
+        entries: [EntryInfo],
+        progress: (@Sendable (Double) -> Void)?
+    ) -> Int32 {
+        var reader: UnsafeMutableRawPointer?
+        guard mzZipReaderCreate(&reader) != nil, let reader else { return -104 }
+        defer {
+            _ = mzZipReaderClose(reader)
+            var handle: UnsafeMutableRawPointer? = reader
+            mzZipReaderDelete(&handle)
+        }
+
+        let openStatus = source.path.withCString { mzZipReaderOpenFile(reader, $0) }
+        guard openStatus == 0 else { return openStatus }
+        mzZipReaderSetEncoding(reader, 936)
+
+        var progressBox: MinizipProgressBox?
+        if let progress, totalSize > 0 {
+            let box = MinizipProgressBox(
+                total: Int64(min(totalSize, UInt64(Int64.max))), report: progress
+            )
+            progressBox = box
+            mzZipReaderSetProgressInterval(reader, 100)
+            mzZipReaderSetProgressCallback(
+                reader,
+                Unmanaged.passUnretained(box).toOpaque(),
+                minizipProgressCallback
+            )
+        }
+        defer { withExtendedLifetime(progressBox) {} }
+
+        let saveEntries: () -> Int32 = {
+            var status = mzZipReaderGotoFirstEntry(reader)
+            for entry in entries {
+                guard status == 0 else { return status }
+                if let output = safeOutputURL(for: entry.path, under: destination) {
+                    do {
+                        if entry.isDirectory {
+                            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+                        } else {
+                            try FileManager.default.createDirectory(
+                                at: output.deletingLastPathComponent(), withIntermediateDirectories: true
+                            )
+                            status = output.path.withCString { mzZipReaderEntrySaveFile(reader, $0) }
+                            guard status == 0 else { return status }
+                        }
+                    } catch {
+                        return -116
+                    }
+                }
+                status = mzZipReaderGotoNextEntry(reader)
+            }
+            return status == -100 ? 0 : status
+        }
+        guard let password else { return saveEntries() }
+        return password.withCString { pointer in
+            mzZipReaderSetPassword(reader, pointer)
+            return saveEntries()
+        }
+    }
+
+    nonisolated private func openCurrentFile(
+        _ archive: UnsafeMutableRawPointer, password: Data
+    ) -> Int32 {
+        var nulTerminated = password
+        nulTerminated.append(0)
+        return nulTerminated.withUnsafeBytes { bytes in
+            unzOpenCurrentFilePassword(
+                archive,
+                bytes.bindMemory(to: CChar.self).baseAddress
+            )
+        }
+    }
+
+    nonisolated private func passwordDataCandidates(_ password: String) -> [Data] {
+        let gb18030 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+        ))
+        let cp949 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.dosKorean.rawValue)
+        ))
+        let encodings: [String.Encoding] = [.utf8, gb18030, .shiftJIS, cp949]
+        var seen = Set<Data>()
+        return encodings.compactMap { password.data(using: $0, allowLossyConversion: false) }
+            .filter { seen.insert($0).inserted }
     }
 
     nonisolated private func openArchive(
