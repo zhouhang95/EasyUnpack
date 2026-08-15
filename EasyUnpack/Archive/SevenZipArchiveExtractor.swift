@@ -80,8 +80,10 @@ struct SevenZipArchiveExtractor: ArchiveExtractor {
             request.progress?(1)
             return ArchiveResult(destinationURL: destination, format: format)
         } catch let error as ArchiveError {
+            NSLog("EasyUnpack 7z extraction failed for %@: %@", source.path, error.localizedDescription)
             throw error
         } catch {
+            NSLog("EasyUnpack 7z extraction failed for %@: %@", source.path, String(describing: error))
             throw map(error, passwordWasProvided: request.password?.isEmpty == false)
         }
     }
