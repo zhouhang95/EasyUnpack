@@ -63,6 +63,10 @@ nonisolated private func unzReadCurrentFile(
 ) -> Int32
 @_silgen_name("unzCloseCurrentFile")
 nonisolated private func unzCloseCurrentFile(_ handle: UnsafeMutableRawPointer?) -> Int32
+@_silgen_name("crc32")
+nonisolated private func zlibCRC32(
+    _ crc: UInt, _ buffer: UnsafePointer<UInt8>?, _ length: UInt32
+) -> UInt
 
 nonisolated private final class MinizipProgressBox: @unchecked Sendable {
     private let lock = NSLock()
@@ -304,6 +308,7 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
     nonisolated private struct EntryInfo {
         let path: String
         let uncompressedSize: UInt64
+        let crc32: UInt32
         let isDirectory: Bool
         let isEncrypted: Bool
     }
@@ -331,6 +336,7 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         return EntryInfo(
             path: path,
             uncompressedSize: info.uncompressed_size,
+            crc32: info.crc,
             isDirectory: rawName.last == 0x2F || rawName.last == 0x5C,
             isEncrypted: (info.flag & 1) != 0
         )
@@ -522,8 +528,9 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         defer { withExtendedLifetime(progressBox) {} }
 
         let saveEntries: () -> Int32 = {
+            guard !entries.isEmpty else { return 0 }
             var status = mzZipReaderGotoFirstEntry(reader)
-            for entry in entries {
+            for (index, entry) in entries.enumerated() {
                 guard status == 0 else { return status }
                 if let output = safeOutputURL(for: entry.path, under: destination) {
                     do {
@@ -534,20 +541,58 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
                                 at: output.deletingLastPathComponent(), withIntermediateDirectories: true
                             )
                             status = output.path.withCString { mzZipReaderEntrySaveFile(reader, $0) }
-                            guard status == 0 else { return status }
+                            if status == -3, outputMatchesCatalog(output, entry: entry) {
+                                status = 0
+                            }
+                            guard status == 0 else {
+                                NSLog(
+                                    "EasyUnpack split ZIP entry failed with status %d at index %d: %@",
+                                    status, index, entry.path
+                                )
+                                return status
+                            }
                         }
                     } catch {
                         return -116
                     }
                 }
-                status = mzZipReaderGotoNextEntry(reader)
+                // The catalog already gives us the exact entry count. Do not ask minizip
+                // to advance beyond the final entry: some valid split archives report a
+                // zlib data error there even though the final entry was saved successfully.
+                if index + 1 < entries.count {
+                    status = mzZipReaderGotoNextEntry(reader)
+                }
             }
-            return status == -100 ? 0 : status
+            return 0
         }
         guard let password else { return saveEntries() }
         return password.withCString { pointer in
             mzZipReaderSetPassword(reader, pointer)
             return saveEntries()
+        }
+    }
+
+    nonisolated private func outputMatchesCatalog(_ output: URL, entry: EntryInfo) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: output.path),
+              let size = attributes[.size] as? NSNumber,
+              size.uint64Value == entry.uncompressedSize,
+              let file = try? FileHandle(forReadingFrom: output) else { return false }
+        defer { try? file.close() }
+
+        var checksum = zlibCRC32(0, nil, 0)
+        do {
+            while let data = try file.read(upToCount: 1024 * 1024), !data.isEmpty {
+                checksum = data.withUnsafeBytes { bytes in
+                    zlibCRC32(
+                        checksum,
+                        bytes.bindMemory(to: UInt8.self).baseAddress,
+                        UInt32(bytes.count)
+                    )
+                }
+            }
+            return UInt32(truncatingIfNeeded: checksum) == entry.crc32
+        } catch {
+            return false
         }
     }
 
