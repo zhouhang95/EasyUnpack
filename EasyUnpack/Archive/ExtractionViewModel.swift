@@ -83,7 +83,10 @@ final class ExtractionViewModel {
 
         let openedBase = archiveURLs[0].deletingPathExtension().path
         let matchingExisting = sourceURLs.filter { $0.deletingPathExtension().path == openedBase }
-        let combined = Dictionary(uniqueKeysWithValues: (matchingExisting + archiveURLs).map { ($0.path, $0) })
+        let combined = Dictionary(
+            (matchingExisting + archiveURLs).map { ($0.path, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
         sourceURLs = Array(combined.values).sorted { lhs, rhs in
             if lhs.pathExtension.lowercased() == "zip" { return false }
             if rhs.pathExtension.lowercased() == "zip" { return true }

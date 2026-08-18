@@ -155,9 +155,15 @@ struct RARArchiveExtractor: ArchiveExtractor {
     nonisolated private func check(_ code: Int32) throws {
         switch code {
         case ERAR_SUCCESS: return
-        case ERAR_MISSING_PASSWORD, ERAR_BAD_PASSWORD: throw ArchiveError.invalidPassword
-        case ERAR_BAD_DATA, ERAR_BAD_ARCHIVE, ERAR_UNKNOWN_FORMAT: throw ArchiveError.damagedArchive
-        default: throw ArchiveError.extractionFailed("RAR 解压失败（UnRAR 错误码 \(code)）。")
+        case ERAR_MISSING_PASSWORD, ERAR_BAD_PASSWORD:
+            NSLog("EasyUnpack UnRAR returned password error %d", code)
+            throw ArchiveError.invalidPassword
+        case ERAR_BAD_DATA, ERAR_BAD_ARCHIVE, ERAR_UNKNOWN_FORMAT:
+            NSLog("EasyUnpack UnRAR returned archive error %d", code)
+            throw ArchiveError.damagedArchive
+        default:
+            NSLog("EasyUnpack UnRAR returned error %d", code)
+            throw ArchiveError.extractionFailed("RAR 解压失败（UnRAR 错误码 \(code)）。")
         }
     }
 
