@@ -97,12 +97,85 @@ nonisolated private let minizipProgressCallback: MinizipProgressCallback = { _, 
 }
 
 nonisolated private final class OffsetZIPFile: @unchecked Sendable {
-    let path: String
+    let paths: [String]
+    let sizes: [UInt64]
     let offset: UInt64
 
-    init(path: String, offset: UInt64) {
-        self.path = path
+    init(paths: [String], offset: UInt64) {
+        self.paths = paths
+        self.sizes = paths.map { path in
+            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+            return (attributes?[.size] as? NSNumber)?.uint64Value ?? 0
+        }
         self.offset = offset
+    }
+}
+
+nonisolated private final class OffsetZIPStream: @unchecked Sendable {
+    let files: [UnsafeMutablePointer<FILE>]
+    let sizes: [UInt64]
+    let baseOffset: UInt64
+    let length: UInt64
+    var position: UInt64 = 0
+
+    init?(file: OffsetZIPFile) {
+        var opened: [UnsafeMutablePointer<FILE>] = []
+        for path in file.paths {
+            guard let handle = fopen(path, "rb") else {
+                opened.forEach { fclose($0) }
+                return nil
+            }
+            opened.append(handle)
+        }
+        files = opened
+        sizes = file.sizes
+        baseOffset = file.offset
+        length = sizes.reduce(0, +) - min(file.offset, sizes.reduce(0, +))
+    }
+
+    deinit { files.forEach { fclose($0) } }
+
+    func read(into buffer: UnsafeMutableRawPointer, count: UInt) -> UInt {
+        var remaining = Int(count)
+        var written = 0
+        while remaining > 0, position < length {
+            let physical = baseOffset + position
+            var start: UInt64 = 0
+            var locatedIndex: Int?
+            for index in sizes.indices {
+                if physical < start + sizes[index] {
+                    locatedIndex = index
+                    break
+                }
+                start += sizes[index]
+            }
+            guard let index = locatedIndex else { break }
+            let within = physical - start
+            let available = Int(min(UInt64(remaining), sizes[index] - within))
+            guard fseeko(files[index], off_t(within), SEEK_SET) == 0 else { break }
+            let amount = fread(buffer.advanced(by: written), 1, available, files[index])
+            guard amount > 0 else { break }
+            written += amount
+            remaining -= amount
+            position += UInt64(amount)
+        }
+        return UInt(written)
+    }
+
+    func seek(offset: UInt64, origin: Int32) -> Int {
+        let signedOffset = Int64(bitPattern: offset)
+        let base: Int64
+        switch origin {
+        case 0: base = 0
+        case 1: base = Int64(position)
+        case 2: base = Int64(length)
+        default: return -1
+        }
+        let target = base.addingReportingOverflow(signedOffset)
+        guard !target.overflow, target.partialValue >= 0,
+              UInt64(target.partialValue) <= length else { return -1 }
+        position = UInt64(target.partialValue)
+        return 0
     }
 }
 
@@ -128,43 +201,31 @@ private struct ZipFileFunctions64 {
 nonisolated private let offsetZipOpen: ZipOpenCallback = { opaque, _, _ in
     guard let opaque else { return nil }
     let box = Unmanaged<OffsetZIPFile>.fromOpaque(opaque).takeUnretainedValue()
-    guard let file = fopen(box.path, "rb") else { return nil }
-    guard fseeko(file, off_t(box.offset), SEEK_SET) == 0 else {
-        fclose(file)
-        return nil
-    }
-    return UnsafeMutableRawPointer(file)
+    guard let stream = OffsetZIPStream(file: box) else { return nil }
+    return Unmanaged.passRetained(stream).toOpaque()
 }
 nonisolated private let offsetZipRead: ZipReadCallback = { _, stream, buffer, size in
     guard let stream, let buffer else { return 0 }
-    return UInt(fread(buffer, 1, Int(size), stream.assumingMemoryBound(to: FILE.self)))
+    return Unmanaged<OffsetZIPStream>.fromOpaque(stream).takeUnretainedValue()
+        .read(into: buffer, count: size)
 }
 nonisolated private let offsetZipWrite: ZipWriteCallback = { _, _, _, _ in 0 }
 nonisolated private let offsetZipTell: ZipTellCallback = { opaque, stream in
-    guard let opaque, let stream else { return UInt64.max }
-    let box = Unmanaged<OffsetZIPFile>.fromOpaque(opaque).takeUnretainedValue()
-    let position = ftello(stream.assumingMemoryBound(to: FILE.self))
-    guard position >= off_t(box.offset) else { return UInt64.max }
-    return UInt64(position) - box.offset
+    guard opaque != nil, let stream else { return UInt64.max }
+    return Unmanaged<OffsetZIPStream>.fromOpaque(stream).takeUnretainedValue().position
 }
 nonisolated private let offsetZipSeek: ZipSeekCallback = { opaque, stream, offset, origin in
-    guard let opaque, let stream else { return -1 }
-    let box = Unmanaged<OffsetZIPFile>.fromOpaque(opaque).takeUnretainedValue()
-    let file = stream.assumingMemoryBound(to: FILE.self)
-    switch origin {
-    case 0: return Int(fseeko(file, off_t(box.offset + offset), SEEK_SET))
-    case 1: return Int(fseeko(file, off_t(offset), SEEK_CUR))
-    case 2: return Int(fseeko(file, off_t(offset), SEEK_END))
-    default: return -1
-    }
+    guard opaque != nil, let stream else { return -1 }
+    return Unmanaged<OffsetZIPStream>.fromOpaque(stream).takeUnretainedValue()
+        .seek(offset: offset, origin: origin)
 }
 nonisolated private let offsetZipClose: ZipCloseCallback = { _, stream in
     guard let stream else { return -1 }
-    return fclose(stream.assumingMemoryBound(to: FILE.self))
+    Unmanaged<OffsetZIPStream>.fromOpaque(stream).release()
+    return 0
 }
 nonisolated private let offsetZipError: ZipErrorCallback = { _, stream in
-    guard let stream else { return -1 }
-    return ferror(stream.assumingMemoryBound(to: FILE.self))
+    stream == nil ? -1 : 0
 }
 
 struct ZIPArchiveExtractor: ArchiveExtractor {
@@ -194,16 +255,17 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
 
         let source = try mainZIP(in: request.sourceURLs)
         try validateSplitVolumes(around: source, selected: request.sourceURLs)
+        let logicalVolumes = try orderedLogicalVolumes(for: source, among: request.sourceURLs)
         try FileManager.default.createDirectory(at: request.destinationURL, withIntermediateDirectories: true)
 
         // Read the central directory first so extraction can write straight to its visible final location.
         // The modern minizip-ng reader handles SFX/prepended data, ZipCrypto, WinZip AES and split disks.
-        let embeddedOffset = embeddedZIPOffset(in: source)
-        let catalog = try archiveCatalog(in: source, embeddedOffset: embeddedOffset)
+        let embeddedOffset = logicalVolumes.count > 1 ? 0 : embeddedZIPOffset(in: source)
+        let catalog = try archiveCatalog(in: logicalVolumes, embeddedOffset: embeddedOffset)
         let extractionDestination: URL
         if catalog.roots.count > 1 {
             extractionDestination = request.destinationURL.appendingPathComponent(
-                source.deletingPathExtension().lastPathComponent,
+                archiveBaseName(source),
                 isDirectory: true
             )
         } else {
@@ -227,6 +289,7 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         } else {
             extractEntries(
                 source: source,
+                volumes: logicalVolumes,
                 destination: extractionDestination,
                 password: password,
                 totalSize: catalog.totalSize,
@@ -256,8 +319,8 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         let entries: [EntryInfo]
     }
 
-    nonisolated private func archiveCatalog(in source: URL, embeddedOffset: UInt64) throws -> ArchiveCatalog {
-        guard let opened = openArchive(source, embeddedOffset: embeddedOffset) else {
+    nonisolated private func archiveCatalog(in volumes: [URL], embeddedOffset: UInt64) throws -> ArchiveCatalog {
+        guard let opened = openArchive(volumes, embeddedOffset: embeddedOffset) else {
             throw ArchiveError.damagedArchive
         }
         let (archive, offsetBox) = opened
@@ -303,6 +366,31 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
             let name = "\(base).z\(String(format: "%02d", number))"
             guard selectedNames.contains(name.lowercased()) else { throw ArchiveError.missingSplitVolume(name) }
         }
+    }
+
+    nonisolated private func orderedLogicalVolumes(for source: URL, among urls: [URL]) throws -> [URL] {
+        guard source.pathExtension == "001" else { return [source] }
+        let base = source.deletingPathExtension().path.lowercased()
+        let ordered = urls.filter {
+            $0.deletingPathExtension().path.lowercased() == base &&
+                $0.pathExtension.count == 3 && $0.pathExtension.allSatisfy(\.isNumber)
+        }.sorted { $0.pathExtension < $1.pathExtension }
+        guard !ordered.isEmpty else { throw ArchiveError.missingMainVolume }
+        for (index, volume) in ordered.enumerated() {
+            let expected = String(format: "%03d", index + 1)
+            guard volume.pathExtension == expected else {
+                throw ArchiveError.missingSplitVolume(source.deletingPathExtension().lastPathComponent + "." + expected)
+            }
+        }
+        return ordered
+    }
+
+    nonisolated private func archiveBaseName(_ source: URL) -> String {
+        let withoutChunk = source.deletingPathExtension()
+        if source.pathExtension == "001", withoutChunk.pathExtension.lowercased() == "zip" {
+            return withoutChunk.deletingPathExtension().lastPathComponent
+        }
+        return withoutChunk.lastPathComponent
     }
 
     nonisolated private struct EntryInfo {
@@ -417,13 +505,14 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
 
     nonisolated private func extractEntries(
         source: URL,
+        volumes: [URL],
         destination: URL,
         password: String?,
         totalSize: UInt64,
         embeddedOffset: UInt64,
         progress: (@Sendable (Double) -> Void)?
     ) -> Int32 {
-        guard let opened = openArchive(source, embeddedOffset: embeddedOffset) else { return -104 }
+        guard let opened = openArchive(volumes, embeddedOffset: embeddedOffset) else { return -104 }
         let (archive, offsetBox) = opened
         defer { _ = unzClose(archive) }
         defer { withExtendedLifetime(offsetBox) {} }
@@ -623,14 +712,15 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
     }
 
     nonisolated private func openArchive(
-        _ source: URL, embeddedOffset: UInt64
+        _ volumes: [URL], embeddedOffset: UInt64
     ) -> (UnsafeMutableRawPointer, OffsetZIPFile?)? {
-        guard embeddedOffset > 0 else {
+        guard let source = volumes.first else { return nil }
+        guard embeddedOffset > 0 || volumes.count > 1 else {
             return source.path.withCString { path in
                 unzOpen64(UnsafeRawPointer(path)).map { ($0, nil) }
             }
         }
-        let box = OffsetZIPFile(path: source.path, offset: embeddedOffset)
+        let box = OffsetZIPFile(paths: volumes.map(\.path), offset: embeddedOffset)
         var functions = ZipFileFunctions64(
             open: offsetZipOpen,
             read: offsetZipRead,

@@ -147,6 +147,7 @@ final class ExtractionViewModel {
                 message = "解压完成：\(result.destinationURL.path)"
                 NSApp.terminate(nil)
             } catch {
+                NSLog("EasyUnpack extraction failed: %@", error.localizedDescription)
                 if let archiveError = error as? ArchiveError,
                    case .invalidPassword = archiveError {
                     password = ""
@@ -176,6 +177,7 @@ final class ExtractionViewModel {
     private func relatedVolumes(for mainZIP: URL) -> [URL] {
         let directory = mainZIP.deletingLastPathComponent()
         let base = mainZIP.deletingPathExtension().lastPathComponent.lowercased()
+        let isNumberedChunks = mainZIP.pathExtension == "001"
         let contents = (try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil,
@@ -184,6 +186,9 @@ final class ExtractionViewModel {
         return contents.filter { url in
             guard url.deletingPathExtension().lastPathComponent.lowercased() == base else { return false }
             let ext = url.pathExtension.lowercased()
+            if isNumberedChunks {
+                return ext.count == 3 && ext.allSatisfy(\.isNumber)
+            }
             return ext.range(of: #"z\d\d"#, options: .regularExpression) != nil
         }
     }
