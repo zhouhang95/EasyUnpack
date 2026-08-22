@@ -23,6 +23,10 @@ nonisolated private func mzZipReaderGotoNextEntry(_ handle: UnsafeMutableRawPoin
 nonisolated private func mzZipReaderEntrySaveFile(
     _ handle: UnsafeMutableRawPointer?, _ path: UnsafePointer<CChar>
 ) -> Int32
+@_silgen_name("mz_zip_reader_entry_open")
+nonisolated private func mzZipReaderEntryOpen(_ handle: UnsafeMutableRawPointer?) -> Int32
+@_silgen_name("mz_zip_reader_entry_close")
+nonisolated private func mzZipReaderEntryClose(_ handle: UnsafeMutableRawPointer?) -> Int32
 @_silgen_name("mz_zip_reader_close")
 nonisolated private func mzZipReaderClose(_ handle: UnsafeMutableRawPointer?) -> Int32
 private typealias MinizipProgressCallback = @convention(c) (
@@ -347,7 +351,8 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
     }
 
     nonisolated private func mainZIP(in urls: [URL]) throws -> URL {
-        guard let main = urls.first(where: { ArchiveFormatDetector.detect($0) == .zip }) else {
+        guard let main = urls.first(where: { $0.pathExtension.lowercased() == "zip" })
+            ?? urls.first(where: { ArchiveFormatDetector.detect($0) == .zip }) else {
             throw ArchiveError.missingMainVolume
         }
         return main
@@ -655,10 +660,48 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
             return 0
         }
         guard let password else { return saveEntries() }
-        return password.withCString { pointer in
-            mzZipReaderSetPassword(reader, pointer)
+        let candidates = passwordDataCandidates(password)
+        let selection = selectSplitPassword(reader, entries: entries, candidates: candidates)
+        guard let selected = selection.password else { return selection.status }
+        var nulTerminated = selected
+        nulTerminated.append(0)
+        return nulTerminated.withUnsafeBytes { bytes in
+            mzZipReaderSetPassword(reader, bytes.bindMemory(to: CChar.self).baseAddress!)
             return saveEntries()
         }
+    }
+
+    nonisolated private func selectSplitPassword(
+        _ reader: UnsafeMutableRawPointer,
+        entries: [EntryInfo],
+        candidates: [Data]
+    ) -> (password: Data?, status: Int32) {
+        guard entries.contains(where: \.isEncrypted) else {
+            return (candidates.first ?? Data(), 0)
+        }
+        var status = mzZipReaderGotoFirstEntry(reader)
+        guard status == 0 else { return (nil, status) }
+        for entry in entries {
+            guard status == 0 else { return (nil, status) }
+            if entry.isEncrypted {
+                var lastStatus: Int32 = -108
+                for candidate in candidates {
+                    var nulTerminated = candidate
+                    nulTerminated.append(0)
+                    lastStatus = nulTerminated.withUnsafeBytes { bytes in
+                        mzZipReaderSetPassword(reader, bytes.bindMemory(to: CChar.self).baseAddress!)
+                        return mzZipReaderEntryOpen(reader)
+                    }
+                    if lastStatus == 0 {
+                        _ = mzZipReaderEntryClose(reader)
+                        return (candidate, 0)
+                    }
+                }
+                return (nil, lastStatus)
+            }
+            status = mzZipReaderGotoNextEntry(reader)
+        }
+        return (nil, -108)
     }
 
     nonisolated private func outputMatchesCatalog(_ output: URL, entry: EntryInfo) -> Bool {

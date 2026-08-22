@@ -18,8 +18,7 @@ enum ArchiveFormatDetector {
         if prefix.starts(with: [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) { return .sevenZ }
         if prefix.starts(with: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07]) { return .rar }
         if prefix.starts(with: [0x50, 0x4B, 0x03, 0x04]) ||
-            prefix.starts(with: [0x50, 0x4B, 0x05, 0x06]) ||
-            prefix.starts(with: [0x50, 0x4B, 0x07, 0x08]) { return .zip }
+            prefix.starts(with: [0x50, 0x4B, 0x05, 0x06]) { return .zip }
         if prefix.count >= 262,
            prefix.subdata(in: 257..<262) == Data("ustar".utf8) { return .tar }
 
