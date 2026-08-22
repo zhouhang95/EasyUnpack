@@ -284,6 +284,7 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         let status = if isSplitArchive {
             extractSplitArchive(
                 source: source,
+                volumes: request.sourceURLs,
                 destination: extractionDestination,
                 password: password,
                 totalSize: catalog.totalSize,
@@ -588,12 +589,26 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
 
     nonisolated private func extractSplitArchive(
         source: URL,
+        volumes: [URL],
         destination: URL,
         password: String?,
         totalSize: UInt64,
         entries: [EntryInfo],
         progress: (@Sendable (Double) -> Void)?
     ) -> Int32 {
+        let aliasedSource: URL
+        let aliasDirectory: URL?
+        do {
+            let aliases = try splitArchiveAliases(source: source, volumes: volumes)
+            aliasedSource = aliases.source
+            aliasDirectory = aliases.directory
+        } catch {
+            return -111
+        }
+        defer {
+            if let aliasDirectory { try? FileManager.default.removeItem(at: aliasDirectory) }
+        }
+
         var reader: UnsafeMutableRawPointer?
         guard mzZipReaderCreate(&reader) != nil, let reader else { return -104 }
         defer {
@@ -602,7 +617,7 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
             mzZipReaderDelete(&handle)
         }
 
-        let openStatus = source.path.withCString { mzZipReaderOpenFile(reader, $0) }
+        let openStatus = aliasedSource.path.withCString { mzZipReaderOpenFile(reader, $0) }
         guard openStatus == 0 else { return openStatus }
         mzZipReaderSetEncoding(reader, 936)
 
@@ -668,6 +683,42 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         return nulTerminated.withUnsafeBytes { bytes in
             mzZipReaderSetPassword(reader, bytes.bindMemory(to: CChar.self).baseAddress!)
             return saveEntries()
+        }
+    }
+
+    nonisolated private func splitArchiveAliases(
+        source: URL, volumes: [URL]
+    ) throws -> (source: URL, directory: URL?) {
+        let numbered = volumes.compactMap { volume -> (number: Int, url: URL)? in
+            let ext = volume.pathExtension.lowercased()
+            guard ext.count == 3, ext.first == "z", let number = Int(ext.dropFirst()) else {
+                return nil
+            }
+            return (number, volume)
+        }
+        guard let lastNumber = numbered.map(\.number).max() else { return (source, nil) }
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "EasyUnpack-SplitZIP-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        do {
+            for volume in volumes {
+                try FileManager.default.createSymbolicLink(
+                    at: directory.appendingPathComponent(volume.lastPathComponent),
+                    withDestinationURL: volume
+                )
+            }
+            let finalPartName = source.deletingPathExtension().lastPathComponent +
+                ".z\(String(format: "%02d", lastNumber + 1))"
+            try FileManager.default.createSymbolicLink(
+                at: directory.appendingPathComponent(finalPartName),
+                withDestinationURL: source
+            )
+            return (directory.appendingPathComponent(source.lastPathComponent), directory)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
         }
     }
 
