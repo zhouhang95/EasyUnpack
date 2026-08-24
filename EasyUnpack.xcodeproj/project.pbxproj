@@ -108,7 +108,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A10000000000000000000002 /* XCRemoteSwiftPackageReference "ZipArchive" */,
-				A20000000000000000000002 /* XCRemoteSwiftPackageReference "PLzmaSDK" */,
+				A20000000000000000000002 /* XCLocalSwiftPackageReference "Vendor/PLzmaSDK" */,
 				A30000000000000000000002 /* XCLocalSwiftPackageReference "Vendor/UnRAR" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -350,6 +350,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Vendor/UnRAR;
 		};
+		A20000000000000000000002 /* XCLocalSwiftPackageReference "Vendor/PLzmaSDK" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/PLzmaSDK;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -359,14 +363,6 @@
 			requirement = {
 				kind = revision;
 				revision = df35718ea19a94e015b91dc4881dee028ce4cdba;
-			};
-		};
-		A20000000000000000000002 /* XCRemoteSwiftPackageReference "PLzmaSDK" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/OlehKulykov/PLzmaSDK.git";
-			requirement = {
-				kind = exactVersion;
-				version = 1.6.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -379,7 +375,7 @@
 		};
 		A20000000000000000000003 /* PLzmaSDK */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A20000000000000000000002 /* XCRemoteSwiftPackageReference "PLzmaSDK" */;
+			package = A20000000000000000000002 /* XCLocalSwiftPackageReference "Vendor/PLzmaSDK" */;
 			productName = PLzmaSDK;
 		};
 		A30000000000000000000003 /* CUnRAR */ = {
