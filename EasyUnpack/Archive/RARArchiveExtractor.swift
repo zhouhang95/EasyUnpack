@@ -80,7 +80,11 @@ struct RARArchiveExtractor: ArchiveExtractor {
         let metadata = destination.appendingPathComponent("__MACOSX", isDirectory: true)
         if FileManager.default.fileExists(atPath: metadata.path) { try FileManager.default.removeItem(at: metadata) }
         request.progress?(1)
-        return ArchiveResult(destinationURL: destination, format: format)
+        return ArchiveResult(
+            destinationURL: destination,
+            format: format,
+            topLevelURLs: roots.map { destination.appendingPathComponent($0) }
+        )
     }
 
     nonisolated private func list(_ source: URL, password: String?) throws -> (paths: [String], total: UInt64) {

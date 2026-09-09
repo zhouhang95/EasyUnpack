@@ -37,7 +37,11 @@ struct TARArchiveExtractor: ArchiveExtractor {
             try FileManager.default.removeItem(at: metadata)
         }
         request.progress?(1)
-        return ArchiveResult(destinationURL: destination, format: format)
+        return ArchiveResult(
+            destinationURL: destination,
+            format: format,
+            topLevelURLs: roots.map { destination.appendingPathComponent($0) }
+        )
     }
 
     nonisolated private struct Entry: Sendable {

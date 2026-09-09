@@ -78,7 +78,11 @@ struct SevenZipArchiveExtractor: ArchiveExtractor {
                 guard succeeded else { throw ArchiveError.damagedArchive }
             }
             request.progress?(1)
-            return ArchiveResult(destinationURL: destination, format: format)
+            return ArchiveResult(
+                destinationURL: destination,
+                format: format,
+                topLevelURLs: roots.map { destination.appendingPathComponent($0) }
+            )
         } catch let error as ArchiveError {
             NSLog("EasyUnpack 7z extraction failed for %@: %@", source.path, error.localizedDescription)
             throw error

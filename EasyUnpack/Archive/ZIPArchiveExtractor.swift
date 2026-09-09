@@ -308,7 +308,13 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         }
         request.progress?(1)
         try removeMacOSMetadataDirectory(from: extractionDestination)
-        return ArchiveResult(destinationURL: extractionDestination, format: format)
+        return ArchiveResult(
+            destinationURL: extractionDestination,
+            format: format,
+            topLevelURLs: catalog.roots.map {
+                extractionDestination.appendingPathComponent($0)
+            }
+        )
     }
 
     nonisolated private func removeMacOSMetadataDirectory(from staging: URL) throws {

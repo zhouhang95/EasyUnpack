@@ -47,6 +47,20 @@ struct ArchiveRequest: Sendable {
 struct ArchiveResult: Sendable {
     let destinationURL: URL
     let format: ArchiveFormat
+    let topLevelURLs: [URL]
+    let nestedArchiveURLs: [URL]
+
+    init(
+        destinationURL: URL,
+        format: ArchiveFormat,
+        topLevelURLs: [URL],
+        nestedArchiveURLs: [URL] = []
+    ) {
+        self.destinationURL = destinationURL
+        self.format = format
+        self.topLevelURLs = topLevelURLs
+        self.nestedArchiveURLs = nestedArchiveURLs
+    }
 }
 
 enum ArchiveError: LocalizedError, Sendable {

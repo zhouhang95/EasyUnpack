@@ -142,7 +142,7 @@ final class ExtractionViewModel {
         Task {
             do {
                 let result = try await service.extract(request)
-                try await moveOriginalsToTrash(request.sourceURLs)
+                try await moveOriginalsToTrash(request.sourceURLs + result.nestedArchiveURLs)
                 isError = false
                 message = "解压完成：\(result.destinationURL.path)"
                 NSApp.terminate(nil)
