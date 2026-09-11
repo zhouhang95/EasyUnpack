@@ -12,8 +12,7 @@ final class ArchiveService: Sendable {
         guard !request.sourceURLs.isEmpty else { throw ArchiveError.noSource }
 
         var currentRequest = request
-        var nestedArchiveURLs: [URL] = []
-        var visitedPaths = Set(request.sourceURLs.map { $0.standardizedFileURL.path })
+        var activeNestedArchiveURLs: [URL] = []
 
         for depth in 0..<maximumNestedDepth {
             guard let extractor = extractors.first(where: { $0.canHandle(currentRequest.sourceURLs) }) else {
@@ -40,18 +39,16 @@ final class ArchiveService: Sendable {
                     destinationURL: result.destinationURL,
                     format: result.format,
                     topLevelURLs: result.topLevelURLs,
-                    nestedArchiveURLs: nestedArchiveURLs
+                    nestedArchiveURLs: activeNestedArchiveURLs
                 )
             }
 
-            let path = nestedArchive.standardizedFileURL.path
-            guard visitedPaths.insert(path).inserted else {
-                throw ArchiveError.extractionFailed("检测到重复的内层压缩文件，已停止自动解压：\(nestedArchive.lastPathComponent)")
-            }
-            nestedArchiveURLs.append(nestedArchive)
+            try trashCompletedSources(currentRequest.sourceURLs)
+            let renamedArchive = try renameArchiveToMatchDetectedFormat(nestedArchive)
+            activeNestedArchiveURLs = [renamedArchive]
             currentRequest = ArchiveRequest(
-                sourceURLs: [nestedArchive],
-                destinationURL: nestedArchive.deletingLastPathComponent(),
+                sourceURLs: [renamedArchive],
+                destinationURL: renamedArchive.deletingLastPathComponent(),
                 password: request.password,
                 progress: nil
             )
@@ -66,5 +63,41 @@ final class ArchiveService: Sendable {
         guard (try? candidate.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
               ArchiveFormatDetector.detect(candidate) != nil else { return nil }
         return candidate
+    }
+
+    nonisolated private func trashCompletedSources(_ urls: [URL]) throws {
+        for url in urls where FileManager.default.fileExists(atPath: url.path) {
+            do {
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            } catch {
+                throw ArchiveError.trashFailed(error.localizedDescription)
+            }
+        }
+    }
+
+    nonisolated private func renameArchiveToMatchDetectedFormat(_ archive: URL) throws -> URL {
+        guard let format = ArchiveFormatDetector.detect(archive) else {
+            throw ArchiveError.damagedArchive
+        }
+        let expectedExtension = format.rawValue
+        if archive.pathExtension.lowercased() == expectedExtension {
+            return archive
+        }
+
+        let base = archive.pathExtension.isEmpty ? archive : archive.deletingPathExtension()
+        let renamed = base.appendingPathExtension(expectedExtension)
+        guard !FileManager.default.fileExists(atPath: renamed.path) else {
+            throw ArchiveError.extractionFailed(
+                "无法重命名内层压缩文件，目标已存在：\(renamed.lastPathComponent)"
+            )
+        }
+        do {
+            try FileManager.default.moveItem(at: archive, to: renamed)
+            return renamed
+        } catch {
+            throw ArchiveError.extractionFailed(
+                "无法为内层压缩文件添加 .\(expectedExtension) 扩展名：\(error.localizedDescription)"
+            )
+        }
     }
 }

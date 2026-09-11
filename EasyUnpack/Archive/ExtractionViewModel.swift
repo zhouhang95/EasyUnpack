@@ -229,7 +229,12 @@ final class ExtractionViewModel {
     }
 
     private func moveOriginalsToTrash(_ urls: [URL]) async throws {
-        let existingURLs = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+        var seenPaths = Set<String>()
+        let existingURLs = urls.filter { url in
+            let path = url.standardizedFileURL.path
+            return seenPaths.insert(path).inserted &&
+                FileManager.default.fileExists(atPath: path)
+        }
         guard !existingURLs.isEmpty else { return }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
