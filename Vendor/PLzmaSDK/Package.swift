@@ -18,10 +18,15 @@ let package = Package(
                     // (LzmaDec_DecodeReal_3)。不定义时 LzmaDec.c 会退回纯 C 版
                     // LzmaDec_DecodeReal2，7z 解压速度约慢 20%~25%。
                     .define("Z7_LZMA_DEC_OPT", to: "1"),
+                    // EasyUnpack: 启用 7-Zip 多线程编解码（Lzma2DecMt）。
+                    // 不定义时 plzma_private.h 会强制 Z7_ST，整库按单线程编译，
+                    // 解压只能跑满一个核。
+                    .define("LIBPLZMA_ENABLE_MT", to: "1"),
                     .unsafeFlags(["-fPIC"])
                 ],
                 cxxSettings: [
                     .define("LIBPLZMA_VERSION_BUILD", to: "1420"),
+                    .define("LIBPLZMA_ENABLE_MT", to: "1"),
                     .unsafeFlags(["-fPIC", "-fno-rtti"])
                 ],
                 linkerSettings: [.linkedLibrary("z")]),

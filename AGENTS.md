@@ -119,8 +119,10 @@ TAR 由项目用 `FileHandle` 直接解析，支持普通文件、目录、GNU l
 - 自定义解码器使用系统 zlib，并注册 7z Method ID `0x40108`。
 - `Vendor/PLzmaSDK/Package.swift` 显式链接 `libz`。
 - `libplzma` 的 `cSettings` 必须保留 `Z7_LZMA_DEC_OPT=1`。没有它时 `C/LzmaDec.c` 会退回纯 C 解码循环 `LzmaDec_DecodeReal2`，`Asm/arm64/LzmaDecOpt.S` 的 `LzmaDec_DecodeReal_3` 变成不会被调用的死代码，7z 解压约慢 20%~25%。可用 `nm` 检查 `LzmaDec.c.o` 是否引用了 `_LzmaDec_DecodeReal_3`。
+- `libplzma` 的 `cSettings` / `cxxSettings` 必须保留 `LIBPLZMA_ENABLE_MT=1`。上游 `plzma_private.h` 会无条件 `#define Z7_ST`，整库按单线程编译；该宏存在时跳过这层限制，启用 `Lzma2DecMt` 多线程解码与 `CMixerMT` 流水线（AES 与 LZMA2 分线程并行）。线程数由 `CCommonMethodProps::InitCommon()` 的 `GetNumberOfProcessors()` 决定，并用可用内存上限自动收敛，App 层不需要传参。
+- `LIBPLZMA_ENABLE_MT` 依赖上游两个被 PLzmaSDK 裁剪掉的文件：`src/C/MtDec.c` 与 `src/CPP/7zip/Common/StreamBinder.cpp`（内容取自 7-Zip 26.00，与仓库内同名头文件匹配）。升级 PLzmaSDK 后如果出现 `MtDec_*` / `MtProgress_*` / `CStreamBinder` 未定义符号，就是这两个文件又被删了。
 
-此定制用于 `7zAES + Deflate` 固实包。升级或替换 PLzmaSDK 时必须迁移并验证它，否则伪装成 ZIP 的此类 7z 会回归失败。同时要复核 `Z7_LZMA_DEC_OPT` 与 `Deflate` 注册都仍然生效。
+此定制用于 `7zAES + Deflate` 固实包。升级或替换 PLzmaSDK 时必须迁移并验证它，否则伪装成 ZIP 的此类 7z 会回归失败。同时要复核 `Z7_LZMA_DEC_OPT`、`LIBPLZMA_ENABLE_MT`、`MtDec.c`/`StreamBinder.cpp` 与 `Deflate` 注册都仍然生效。
 
 ### RAR
 

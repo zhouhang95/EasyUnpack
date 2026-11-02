@@ -181,12 +181,17 @@ typedef uint32_t DWORD;
 #  define USE_MIXER_ST
 #endif
 
-#ifndef _7ZIP_ST
-#  define _7ZIP_ST 1
-#endif
+// EasyUnpack: 默认按单线程编译。定义 LIBPLZMA_ENABLE_MT 后启用 7-Zip 的
+// 多线程编解码路径（LZMA2 的 Lzma2DecMt 会把数据切成独立块并行解码），
+// 解压速度可接近线性提升。改动仅影响编译期开关，不改变解压结果。
+#if !defined(LIBPLZMA_ENABLE_MT)
+#  ifndef _7ZIP_ST
+#    define _7ZIP_ST 1
+#  endif
 
-#ifndef Z7_ST
-#  define Z7_ST 1
+#  ifndef Z7_ST
+#    define Z7_ST 1
+#  endif
 #endif
 
 #if defined(LIBPLZMA_NO_TAR)

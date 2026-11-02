@@ -130,3 +130,32 @@ macOS 自带 libarchive 同样不支持该压缩包的加密 7z 目录，不能�
 - 用 `Vendor/PLzmaSDK/test_files` 下的样本回归解码，无崩溃、无解压失败（部分样本本身加密，需密码，行为与改动前一致）。
 - 本机 `xcodebuild` 因系统 `sandbox_apply` 限制无法完成 SwiftPM 包解析，改用 `swift build -c release/debug --disable-sandbox` 对同一个 `libplzma` 目标做 Release 与 Debug 编译验证，均通过；App 层 Swift 代码本次未改动。
 - `git diff --check` 通过。
+
+## 2026-11-02 13:40 — 7z 解压仍然只能跑满单核
+
+### 问题表现
+
+- 启用汇编解码器后同一份 `课件2873.7z` 仍需约 55 秒，而 Bandizip、7-Zip 约 30 秒。
+- 采样显示解码期间只有一个线程在跑，其余核心空闲。
+
+### 定位过程
+
+- `src/plzma_private.h` 在 `LIBPLZMA` 下无条件 `#define Z7_ST 1` / `_7ZIP_ST 1`，`CPP/7zip/Compress/Lzma2Decoder.cpp`、`7zExtract.cpp`、`HandlerOut.h` 里所有多线程分支都被编译掉。
+- 由此 `CCommonMethodProps::InitCommon()` 不再把 `_numThreads` 初始化为 CPU 核数，POSIX 的 `GetNumberOfProcessors()` 也直接返回 1，解压链路根本没有 MT 入口。
+- 去掉 `Z7_ST` 后链接失败：`MtDec_*`、`MtProgress_*`、`CStreamBinder::*` 未定义。PLzmaSDK 为了让库能单线程编译，把 `src/C/MtDec.c` 与 `src/CPP/7zip/Common/StreamBinder.cpp` 从仓库里删掉了，只剩头文件。
+
+### 修复内容
+
+- `src/plzma_private.h`：把 `_7ZIP_ST` / `Z7_ST` 的定义放进 `#if !defined(LIBPLZMA_ENABLE_MT)` 分支，默认行为不变。
+- `Vendor/PLzmaSDK/Package.swift`：`libplzma` 的 `cSettings` 与 `cxxSettings` 同时定义 `LIBPLZMA_ENABLE_MT=1`。
+- 从 7-Zip 26.00 上游补回 `src/C/MtDec.c` 与 `src/CPP/7zip/Common/StreamBinder.cpp`（与仓库内 `MtDec.h`、`StreamBinder.h` 版本一致；`MtDec.h` 逐行相同，`StreamBinder.h` 仅多一个 `Z7_final` 修饰）。
+- 不改 App 层 Swift 代码。线程数由库自身按 CPU 核数与可用内存计算，`CMixerMT` 让 AES 解密与 LZMA2 解码流水并行。
+
+### 验证结果
+
+- 同一份样本：单线程 60.19 秒 / 68.16 秒，多线程 26.43 / 26.53 / 27.41 / 28.18 / 29.80 秒，约 2.1 倍。机器为 Apple A18 Pro（6 核，2 性能核 + 4 能效核），8 GB 内存。
+- 正确性：单线程产物与多线程产物 `diff -r` 完全一致，73 个文件清单与大小全部相同；带进度回调（12971 次回调）的多线程产物同样一致。
+- 进度回调在 MT 下正常工作，没有卡死或乱序。
+- `Vendor/PLzmaSDK/test_files` 下 14 个样本逐一比对单线程版与多线程版：通过/失败的集合完全一致（其中 9 个样本本身在此构建下就无法解码，属既有现象，与本次改动无关）。
+- Release 与 Debug 两种配置均编译通过。
+- 本机 `xcodebuild` 仍因 `sandbox_apply` 限制无法完成 SwiftPM 包解析，验证改用 `swift build --disable-sandbox`。
