@@ -118,8 +118,9 @@ TAR 由项目用 `FileHandle` 直接解析，支持普通文件、目录、GNU l
 - 除原有 LZMA、LZMA2、PPMd 外，项目新增 `DeflateDecoder.h/.cpp` 和 `DeflateRegister.cpp`。
 - 自定义解码器使用系统 zlib，并注册 7z Method ID `0x40108`。
 - `Vendor/PLzmaSDK/Package.swift` 显式链接 `libz`。
+- `libplzma` 的 `cSettings` 必须保留 `Z7_LZMA_DEC_OPT=1`。没有它时 `C/LzmaDec.c` 会退回纯 C 解码循环 `LzmaDec_DecodeReal2`，`Asm/arm64/LzmaDecOpt.S` 的 `LzmaDec_DecodeReal_3` 变成不会被调用的死代码，7z 解压约慢 20%~25%。可用 `nm` 检查 `LzmaDec.c.o` 是否引用了 `_LzmaDec_DecodeReal_3`。
 
-此定制用于 `7zAES + Deflate` 固实包。升级或替换 PLzmaSDK 时必须迁移并验证它，否则伪装成 ZIP 的此类 7z 会回归失败。
+此定制用于 `7zAES + Deflate` 固实包。升级或替换 PLzmaSDK 时必须迁移并验证它，否则伪装成 ZIP 的此类 7z 会回归失败。同时要复核 `Z7_LZMA_DEC_OPT` 与 `Deflate` 注册都仍然生效。
 
 ### RAR
 

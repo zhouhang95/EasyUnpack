@@ -14,6 +14,10 @@ let package = Package(
                 path: "src",
                 cSettings: [
                     .define("LIBPLZMA_VERSION_BUILD", to: "1420"),
+                    // EasyUnpack: 启用 Asm/arm64/LzmaDecOpt.S 中的汇编解码器
+                    // (LzmaDec_DecodeReal_3)。不定义时 LzmaDec.c 会退回纯 C 版
+                    // LzmaDec_DecodeReal2，7z 解压速度约慢 20%~25%。
+                    .define("Z7_LZMA_DEC_OPT", to: "1"),
                     .unsafeFlags(["-fPIC"])
                 ],
                 cxxSettings: [

@@ -95,3 +95,38 @@ macOS 自带 libarchive 同样不支持该压缩包的加密 7z 目录，不能�
 - 第二层成功创建 `Sameki -达妮娅 Denia/`，共解出 71 个文件。
 - 解压目录中没有残留 ZIP，App 成功自动退出，未再出现 `-116` 或废纸篓错误。
 - Debug 配置构建通过，`git diff --check` 通过。
+
+## 2026-11-02 12:52 — 7z 解压速度明显慢于其他解压软件
+
+### 问题表现
+
+- 样本 `课件2873.7z`，`3,374,430,154` 字节，74 个条目，解出 73 个文件、约 3.3 GB。
+- 其他解压软件约 30 秒完成，本 App 约 120 秒，CPU 长时间单核跑满。
+- 归档为 AES 加密，正确密码下内容可正常解出，不是失败重试或 CRC 反复校验造成的假慢。
+
+### 定位过程
+
+- 用同一份 `Vendor/PLzmaSDK` 写了独立基准程序，把“只解码不写盘”和“带进度回调解压”分开计时。
+- 只解码耗时 74 秒、写盘与进度回调合计不到 1 秒，说明瓶颈完全在解码器，不在文件写入、不在进度回调、不在废纸篓。
+- `sample` 采样显示 90% 以上样本落在 `LzmaDec_DecodeReal2`（`C/LzmaDec.c` 的纯 C 解码循环）。
+- `nm` 检查发现 `Asm/arm64/LzmaDecOpt.S` 的 `LzmaDec_DecodeReal_3` 虽然被编译并链接进库，但 `LzmaDec.c.o` 没有任何引用，汇编解码器实际从未被调用。
+
+### 根因
+
+`LzmaDec.c` 通过 `Z7_LZMA_DEC_OPT` 决定用汇编版还是纯 C 版解码器，而这个宏只在上游 7-Zip 的构建脚本里定义，`Vendor/PLzmaSDK/Package.swift` 没有定义它，因此 ARM64 汇编解码器一直是死代码。
+
+顺带确认同目录还有两处性能设置，但本次未改动：`src/plzma_private.h` 无条件定义 `Z7_ST`，整库按单线程编译；`src/C/AesOpt.c` 在 `LIBPLZMA` 下 undef 掉架构宏，导致硬件 AES 分支被编译成空文件。实测开启硬件 AES 后同一份样本并没有变快（62.5 秒，±12% 机器状态漂移内），因此没有保留该改动。
+
+### 修复内容
+
+- 在 `Vendor/PLzmaSDK/Package.swift` 的 `libplzma` 目标 `cSettings` 中定义 `Z7_LZMA_DEC_OPT=1`，让 `LzmaDec.c` 调用 `Asm/arm64/LzmaDecOpt.S` 的 `LzmaDec_DecodeReal_3`。
+- 不改 App 层 Swift 代码，不改解压流程，不改安全检查和输出路径逻辑。
+
+### 验证结果
+
+- `nm` 显示 `LzmaDec.c.o` 出现对 `_LzmaDec_DecodeReal_3` 的未定义引用，由 `LzmaDecOpt.S.o` 提供，确认汇编实现真正生效。
+- 同一份样本副本解压产物与改动前逐字节比对一致：73 个文件清单、大小、`diff -r` 全部相同。
+- 同一环境下相邻测量：改动前 74.9 秒，改动后 55.6 秒，约快 25%；该机器测速有约 ±12% 的漂移，后续复测为 62 秒量级。
+- 用 `Vendor/PLzmaSDK/test_files` 下的样本回归解码，无崩溃、无解压失败（部分样本本身加密，需密码，行为与改动前一致）。
+- 本机 `xcodebuild` 因系统 `sandbox_apply` 限制无法完成 SwiftPM 包解析，改用 `swift build -c release/debug --disable-sandbox` 对同一个 `libplzma` 目标做 Release 与 Debug 编译验证，均通过；App 层 Swift 代码本次未改动。
+- `git diff --check` 通过。
