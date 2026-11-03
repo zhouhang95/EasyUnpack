@@ -8,6 +8,10 @@ EasyUnpack 是原生 macOS SwiftUI 解压工具。它通过 Finder“打开方�
 
 ## 2. 不得随意改变的产品行为
 
+- 支持多窗口并行解压。正在解压时打开另一个压缩包应创建独立窗口，各窗口独立管理文件、密码、进度和计时；完成只关闭当前窗口，最后一个窗口关闭后退出 App。同一个窗口不允许重复启动任务。
+
+Finder 文件打开事件由 `UnpackAppDelegate.application(_:open:)` 统一接收，通过独立的 `NSWindow` 和 `ExtractionViewModel` 管理每个任务，避免多个 SwiftUI 视图重复接收或漏收打开事件。`Tests/create-parallel-zip-fixtures.sh` 可以生成带密码的大 ZIP 用于并行解压实测。
+
 1. 始终解压到压缩包所在目录，不弹出目标目录选择 UI。
 2. Finder 打开文件时自动解压；拖入或菜单选择文件时由用户点击开始。
 3. 归档根目录有多个顶层项时，新建与压缩包同名的目录；只有一个顶层项时直接解压到当前目录。
@@ -160,6 +164,8 @@ RAR 使用本地 `Vendor/UnRAR`，Swift 模块名为 `CUnRAR`。实现先列目�
 - 若文件已解压但移入废纸篓失败，应明确报错，不能无提示退出。
 
 ## 9. 开发和验证
+
+修改完成并验证通过后，必须构建 **Release** 版，并将 Release 产物 `EasyUnpack.app` 复制到 `/Applications` 文件夹，更新已安装的应用。不得用 Debug 产物替代 Release 版。
 
 每次修改至少执行：
 

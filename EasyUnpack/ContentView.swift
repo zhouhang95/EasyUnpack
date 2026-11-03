@@ -35,14 +35,16 @@ struct ContentView: View {
                     .strokeBorder(isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1.5, dash: [6]))
             )
             .dropDestination(for: URL.self) { urls, _ in
+                guard !model.isExtracting else { return false }
                 model.acceptDroppedFiles(urls)
                 return !urls.isEmpty
             } isTargeted: { targeted in
-                isDropTargeted = targeted
+                isDropTargeted = targeted && !model.isExtracting
             }
 
             GroupBox("密码（可选）") {
                 TextField("未加密则留空", text: $model.password)
+                    .disabled(model.isExtracting)
                     .textFieldStyle(.roundedBorder)
                     .padding(6)
             }

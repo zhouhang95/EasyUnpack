@@ -13,6 +13,7 @@ final class ExtractionViewModel {
     var elapsedSeconds = 0
     var message: String?
     var isError = false
+    @ObservationIgnored var onExtractionSucceeded: (() -> Void)?
 
     private let service = ArchiveService()
     @ObservationIgnored private var didReadPasteboard = false
@@ -59,6 +60,8 @@ final class ExtractionViewModel {
     }
 
     private func acceptFiles(_ urls: [URL], autoExtract: Bool) {
+        // Finder and drag-and-drop share this gate; never replace an active request.
+        guard !isExtracting else { return }
         var archiveURLs = urls.filter { url in
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return false }
             let ext = url.pathExtension.lowercased()
@@ -104,6 +107,7 @@ final class ExtractionViewModel {
     }
 
     func chooseSources() {
+        guard !isExtracting else { return }
         let panel = NSOpenPanel()
         panel.title = "选择 ZIP 或全部分卷"
         panel.prompt = "选择"
@@ -121,6 +125,7 @@ final class ExtractionViewModel {
     }
 
     func extract() {
+        guard !isExtracting else { return }
         guard let destinationURL = archiveDirectory else {
             isError = true
             message = "无法确定压缩包所在目录。"
@@ -145,7 +150,7 @@ final class ExtractionViewModel {
                 try await moveOriginalsToTrash(request.sourceURLs + result.nestedArchiveURLs)
                 isError = false
                 message = "解压完成：\(result.destinationURL.path)"
-                NSApp.terminate(nil)
+                onExtractionSucceeded?()
             } catch {
                 NSLog("EasyUnpack extraction failed: %@", error.localizedDescription)
                 if let archiveError = error as? ArchiveError,
