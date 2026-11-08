@@ -15,6 +15,8 @@ final class ArchiveService: Sendable {
         var activeNestedArchiveURLs: [URL] = []
 
         for depth in 0..<maximumNestedDepth {
+            // Persist the retry source before decoding this layer, including failures.
+            await request.layerStarted?(currentRequest.sourceURLs, currentRequest.destinationURL)
             guard let extractor = extractors.first(where: { $0.canHandle(currentRequest.sourceURLs) }) else {
                 throw ArchiveError.unsupportedFormat(currentRequest.sourceURLs[0].pathExtension)
             }

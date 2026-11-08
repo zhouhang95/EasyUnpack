@@ -42,6 +42,7 @@ struct ArchiveRequest: Sendable {
     let destinationURL: URL
     let password: String?
     let progress: (@Sendable (Double) -> Void)?
+    var layerStarted: (@Sendable ([URL], URL) async -> Void)? = nil
 }
 
 struct ArchiveResult: Sendable {

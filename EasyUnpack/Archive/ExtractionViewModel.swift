@@ -142,6 +142,12 @@ final class ExtractionViewModel {
             password: password.isEmpty ? nil : password,
             progress: { [self] value in
                 Task { @MainActor in extractionProgress = value }
+            },
+            layerStarted: { [self] urls, destination in
+                await MainActor.run {
+                    sourceURLs = urls
+                    self.destinationURL = destination
+                }
             }
         )
         Task {
