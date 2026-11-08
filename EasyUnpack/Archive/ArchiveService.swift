@@ -14,24 +14,19 @@ final class ArchiveService: Sendable {
         var currentRequest = request
         var activeNestedArchiveURLs: [URL] = []
 
-        for depth in 0..<maximumNestedDepth {
+        for _ in 0..<maximumNestedDepth {
             // Persist the retry source before decoding this layer, including failures.
             await request.layerStarted?(currentRequest.sourceURLs, currentRequest.destinationURL)
             guard let extractor = extractors.first(where: { $0.canHandle(currentRequest.sourceURLs) }) else {
                 throw ArchiveError.unsupportedFormat(currentRequest.sourceURLs[0].pathExtension)
             }
 
-            let layerWeight = pow(0.5, Double(depth + 1))
-            let layerStart = 1 - pow(0.5, Double(depth))
+            request.progress?(0)
             let layerRequest = ArchiveRequest(
                 sourceURLs: currentRequest.sourceURLs,
                 destinationURL: currentRequest.destinationURL,
                 password: currentRequest.password,
-                progress: request.progress.map { report in
-                    { value in
-                        report(min(layerStart + max(0, value) * layerWeight, 0.99))
-                    }
-                }
+                progress: request.progress
             )
             let result = try await extractor.extract(layerRequest)
 
