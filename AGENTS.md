@@ -63,6 +63,7 @@ EasyUnpack/
 │       ├── SevenZipArchiveExtractor.swift
 │       └── RARArchiveExtractor.swift
 ├── Vendor/PLzmaSDK/                 本地且已定制的 7z 库
+├── Vendor/ZipArchive/               本地且已优化 ZipCrypto 的 ZIP 库
 ├── Vendor/UnRAR/                    本地 UnRAR Swift Package
 ├── Info.plist                       Finder 文件关联和 .001 UTType
 └── bugfix.md                        复杂兼容问题及验证记录
@@ -95,7 +96,7 @@ EasyUnpack/
 
 ### ZIP
 
-ZIP 使用远程 Swift Package `ZipArchive` 内的 minizip/minizip-ng C API，`Package.resolved` 固定 revision `df35718ea19a94e015b91dc4881dee028ce4cdba`。这里不是简单调用 Swift 高层 API，现有兼容代码包括：
+ZIP 使用本地 Swift Package `Vendor/ZipArchive` 内的 minizip/minizip-ng C API，基于上游 revision `df35718ea19a94e015b91dc4881dee028ce4cdba`。本地定制将 ZipCrypto 的逐字节 CRC 更新改为等价查表，避免每字节两次 zlib 调用；升级时必须保留并验证该优化。这里不是简单调用 Swift 高层 API，现有兼容代码包括：
 
 - 普通 ZIP、ZipCrypto、WinZip AES。
 - 标准 `.z01`、`.z02` … `.zip` 分卷。
@@ -106,6 +107,7 @@ ZIP 使用远程 Swift Package `ZipArchive` 内的 minizip/minizip-ng C API，`P
 - 密码按 UTF-8、GB18030、Shift-JIS、CP949 依次尝试。
 - 解压前读取中央目录，计算顶层项、总大小、条目大小和 CRC。
 - 流式写入最终目录，并拦截绝对路径、`.` 和 `..`。
+- 对单文件 ZIP 中路径互不冲突且总大小至少 64 MiB 的多个条目，最多使用 3 个独立读取器并行解压；重复路径、大小写或文件/目录冲突、分卷流均回退到原串行路径。每个读取器独立验证密码和条目 CRC，全部完成后才能成功返回。
 
 标准分卷有关键兼容措施：minizip-ng 可能在最后 `.zNN` 后寻找下一个数字卷，而标准最终卷名是 `.zip`。`splitArchiveAliases` 会建立临时符号链接，把最终 `.zip` 映射成下一个 `.zNN`，以支持跨最终卷的大文件。不要删除此逻辑。
 
@@ -190,7 +192,7 @@ git diff --check
 
 ## 10. 依赖管理
 
-- `ZipArchive` 是唯一远程 SwiftPM 依赖。出现 `Missing package product 'ZipArchive'` 时先检查包解析和网络，不要把它误认为系统库。
+- `ZipArchive` 是本地 SwiftPM 依赖，路径为 `Vendor/ZipArchive`；出现 `Missing package product 'ZipArchive'` 时先检查本地包路径和包解析，不要把它误认为系统库。
 - `PLzmaSDK` 和 `UnRAR` 是仓库内本地 Package，路径写在 `project.pbxproj`；不要改为 DerivedData 缓存路径。
 - 修改 `Vendor` 后同时验证 Debug 和 Release，C/C++ 优化可能暴露不同问题。
 - 更新 UnRAR 时遵守 `Vendor/UnRAR/license.txt`；其他第三方库也须保留许可证。

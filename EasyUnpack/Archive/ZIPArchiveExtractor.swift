@@ -232,6 +232,37 @@ nonisolated private let offsetZipError: ZipErrorCallback = { _, stream in
     stream == nil ? -1 : 0
 }
 
+nonisolated private final class ParallelZIPState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Double]
+    private var failure: Int32 = 0
+    private let report: (@Sendable (Double) -> Void)?
+
+    init(workers: Int, report: (@Sendable (Double) -> Void)?) {
+        values = Array(repeating: 0, count: workers)
+        self.report = report
+    }
+
+    func update(worker: Int, progress: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        values[worker] = progress
+        report?(min(values.reduce(0, +), 0.99))
+    }
+
+    func finish(status: Int32) {
+        lock.lock()
+        defer { lock.unlock() }
+        if failure == 0 && status != 0 { failure = status }
+    }
+
+    var status: Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+        return failure
+    }
+}
+
 struct ZIPArchiveExtractor: ArchiveExtractor {
     nonisolated let format: ArchiveFormat = .zip
 
@@ -292,13 +323,14 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
                 progress: request.progress
             )
         } else {
-            extractEntries(
+            extractIndependentEntries(
                 source: source,
                 volumes: logicalVolumes,
                 destination: extractionDestination,
                 password: password,
                 totalSize: catalog.totalSize,
                 embeddedOffset: embeddedOffset,
+                entries: catalog.entries,
                 progress: request.progress
             )
         }
@@ -515,6 +547,55 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         return components.reduce(destination) { $0.appendingPathComponent(String($1)) }
     }
 
+    nonisolated private func extractIndependentEntries(
+        source: URL, volumes: [URL], destination: URL, password: String?,
+        totalSize: UInt64, embeddedOffset: UInt64, entries: [EntryInfo],
+        progress: (@Sendable (Double) -> Void)?
+    ) -> Int32 {
+        // Separate ZIP entries can be decoded independently. Do not parallelize
+        // conflicting paths (including case-insensitive aliases and ancestors).
+        let paths = entries.compactMap { entry -> String? in
+            guard !entry.isDirectory else { return nil }
+            return safeOutputURL(for: entry.path, under: destination)?.standardizedFileURL.path
+                .precomposedStringWithCanonicalMapping.lowercased()
+        }
+        let pathSet = Set(paths)
+        let hasDirectoryConflict = entries.contains { entry in
+            guard entry.isDirectory,
+                  let output = safeOutputURL(for: entry.path, under: destination) else { return false }
+            return pathSet.contains(output.standardizedFileURL.path
+                .precomposedStringWithCanonicalMapping.lowercased())
+        }
+        let hasAncestorConflict = paths.contains { path in
+            var parent = (path as NSString).deletingLastPathComponent
+            while parent.count > destination.path.count {
+                if pathSet.contains(parent) { return true }
+                parent = (parent as NSString).deletingLastPathComponent
+            }
+            return false
+        }
+        let workers = volumes.count == 1 && totalSize >= 64 * 1024 * 1024 &&
+            pathSet.count == paths.count && !hasAncestorConflict && !hasDirectoryConflict
+            ? min(3, paths.count, ProcessInfo.processInfo.activeProcessorCount) : 1
+        guard workers > 1 else {
+            return extractEntries(
+                source: source, volumes: volumes, destination: destination, password: password,
+                totalSize: totalSize, embeddedOffset: embeddedOffset, progress: progress
+            )
+        }
+        let state = ParallelZIPState(workers: workers, report: progress)
+        DispatchQueue.concurrentPerform(iterations: workers) { worker in
+            let status = extractEntries(
+                source: source, volumes: volumes, destination: destination, password: password,
+                totalSize: totalSize, embeddedOffset: embeddedOffset,
+                progress: { state.update(worker: worker, progress: $0) },
+                worker: worker, workerCount: workers
+            )
+            state.finish(status: status)
+        }
+        return state.status
+    }
+
     nonisolated private func extractEntries(
         source: URL,
         volumes: [URL],
@@ -522,7 +603,9 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         password: String?,
         totalSize: UInt64,
         embeddedOffset: UInt64,
-        progress: (@Sendable (Double) -> Void)?
+        progress: (@Sendable (Double) -> Void)?,
+        worker: Int = 0,
+        workerCount: Int = 1
     ) -> Int32 {
         guard let opened = openArchive(volumes, embeddedOffset: embeddedOffset) else { return -104 }
         let (archive, offsetBox) = opened
@@ -532,8 +615,15 @@ struct ZIPArchiveExtractor: ArchiveExtractor {
         var completed: UInt64 = 0
         let passwordCandidates = password.map(passwordDataCandidates) ?? []
         var selectedPassword: Data?
+        var entryIndex = 0
         var status = unzGoToFirstFile(archive)
         while status == 0 {
+            let assigned = entryIndex % workerCount == worker
+            entryIndex += 1
+            if !assigned {
+                status = unzGoToNextFile(archive)
+                continue
+            }
             let entry: EntryInfo
             do { entry = try readEntryInfo(from: archive) } catch { return -103 }
             guard let output = safeOutputURL(for: entry.path, under: destination) else {
