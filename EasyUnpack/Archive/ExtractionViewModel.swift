@@ -16,7 +16,6 @@ final class ExtractionViewModel {
     @ObservationIgnored var onExtractionSucceeded: (() -> Void)?
 
     private let service = ArchiveService()
-    @ObservationIgnored private var didReadPasteboard = false
     @ObservationIgnored private var elapsedTask: Task<Void, Never>?
 
     var sourceSummary: String {
@@ -37,17 +36,6 @@ final class ExtractionViewModel {
         return hours > 0
             ? String(format: "%02d:%02d:%02d", hours, minutes, seconds)
             : String(format: "%02d:%02d", minutes, seconds)
-    }
-
-    func loadPasswordFromPasteboardIfNeeded() {
-        guard !didReadPasteboard, password.isEmpty else { return }
-        didReadPasteboard = true
-
-        let pasteboard = NSPasteboard.general
-        guard pasteboard.types?.contains(.string) == true,
-              pasteboard.types?.contains(.fileURL) != true,
-              let text = pasteboard.string(forType: .string) else { return }
-        password = text
     }
 
     /// Receives archives opened from Finder's “Open With” menu.
@@ -96,6 +84,7 @@ final class ExtractionViewModel {
             return lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent) == .orderedAscending
         }
         destinationURL = archiveDirectory
+        password = archiveDirectory?.lastPathComponent ?? ""
         isError = false
         message = autoExtract ? "已从 Finder 接收文件，将解压到压缩包所在目录。" : nil
 

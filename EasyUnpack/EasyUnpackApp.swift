@@ -55,7 +55,6 @@ final class UnpackAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
     @discardableResult
     private func makeWindow() -> (NSWindow, ExtractionViewModel) {
         let model = ExtractionViewModel()
-        model.loadPasswordFromPasteboardIfNeeded()
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
             styleMask: [.titled, .closable, .miniaturizable],

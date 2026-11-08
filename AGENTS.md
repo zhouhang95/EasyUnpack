@@ -16,7 +16,7 @@ Finder 文件打开事件由 `UnpackAppDelegate.application(_:open:)` 统一接�
 2. Finder 打开文件时自动解压；拖入或菜单选择文件时由用户点击开始。
 3. 归档根目录有多个顶层项时，新建与压缩包同名的目录；只有一个顶层项时直接解压到当前目录。
 4. 跳过并清理根部 `__MACOSX` 目录。
-5. 密码框明文显示。App 第一次显示时，如果剪贴板是纯文本且不是文件 URL，就自动填入密码框。
+5. 密码框明文显示。接收压缩包时，默认使用压缩包所在文件夹的名称作为密码，可手动修改；不读取剪贴板。递归解压继续复用当前密码。
 6. 密码错误后清空密码框。
 7. 文件直接写入最终可见目录；解压期间持续更新进度和已用时间，不能先写入隐藏临时目录再整体移动。
 8. 解压成功后自动退出，并把源压缩文件或分卷移到废纸篓；失败时保留 App 和错误信息。递归解压进入下一层前，已经完成的上一层源包会提前移到废纸篓。
@@ -53,7 +53,7 @@ Release 没有硬编码 `ARCHS`。实际产物架构由 Xcode 目标和依赖共
 EasyUnpack/
 ├── EasyUnpack.xcodeproj/            工程、共享 Scheme、SwiftPM 锁文件
 ├── EasyUnpack/
-│   ├── EasyUnpackApp.swift          App 入口、Finder onOpenURL、剪贴板初始化
+│   ├── EasyUnpackApp.swift          App 入口、Finder 文件事件、独立窗口管理
 │   ├── ContentView.swift            拖放、密码、进度、耗时和操作按钮
 │   └── Archive/
 │       ├── ArchiveModels.swift      格式检测、请求/结果/错误、Extractor 协议
