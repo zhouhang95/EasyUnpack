@@ -22,13 +22,32 @@ final class ArchiveService: Sendable {
             }
 
             request.progress?(0)
-            let layerRequest = ArchiveRequest(
+            var layerRequest = ArchiveRequest(
                 sourceURLs: currentRequest.sourceURLs,
                 destinationURL: currentRequest.destinationURL,
                 password: currentRequest.password,
                 progress: request.progress
             )
-            let result = try await extractor.extract(layerRequest)
+            let result: ArchiveResult
+            do {
+                result = try await extractor.extract(layerRequest)
+            } catch ArchiveError.invalidPassword {
+                guard let attemptedPassword = layerRequest.password,
+                      attemptedPassword.contains("_") else {
+                    throw ArchiveError.invalidPassword
+                }
+                let fallbackPassword = String(attemptedPassword.prefix { $0 != "_" })
+                guard !fallbackPassword.isEmpty else { throw ArchiveError.invalidPassword }
+                // Retry only this layer; earlier layers may already be recycled.
+                layerRequest = ArchiveRequest(
+                    sourceURLs: currentRequest.sourceURLs,
+                    destinationURL: currentRequest.destinationURL,
+                    password: fallbackPassword,
+                    progress: request.progress
+                )
+                request.progress?(0)
+                result = try await extractor.extract(layerRequest)
+            }
 
             guard let nestedArchive = nextNestedArchive(in: result.topLevelURLs) else {
                 request.progress?(1)
@@ -46,7 +65,7 @@ final class ArchiveService: Sendable {
             currentRequest = ArchiveRequest(
                 sourceURLs: [renamedArchive],
                 destinationURL: renamedArchive.deletingLastPathComponent(),
-                password: request.password,
+                password: layerRequest.password,
                 progress: nil
             )
         }
